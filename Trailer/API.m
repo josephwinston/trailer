@@ -1,12 +1,23 @@
 
+@interface SuccessfulSyncCommitData : NSObject
+@property (nonatomic) NSDate *latestReceivedEventDate, *latestUserEventDate;
+@property (nonatomic) NSString *latestReceivedEventEtag, *latestUserEventEtag;
+@end
+@implementation SuccessfulSyncCommitData
+@end
+
 @interface API ()
 {
 	NSOperationQueue *requestQueue;
 	NSDateFormatter *mediumFormatter;
     NSString *cacheDirectory;
+
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
 	NSInteger networkIndicationCount;
+	CGFloat GLOBAL_SCREEN_SCALE;
 #endif
+
+	SuccessfulSyncCommitData *syncDataToCommit;
 }
 @end
 
@@ -20,24 +31,31 @@
 	#define CACHE_DISK 1024*1024*8
 #endif
 
+#define CALLBACK if(callback) callback
+
 typedef void (^completionBlockType)(BOOL);
 
 - (id)init
 {
     self = [super init];
-    if (self) {
-
+    if (self)
+	{
+#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
+		GLOBAL_SCREEN_SCALE = [UIScreen mainScreen].scale;
+#endif
 		NSURLCache *cache = [[NSURLCache alloc] initWithMemoryCapacity:CACHE_MEMORY
 														  diskCapacity:CACHE_DISK
 															  diskPath:nil];
 		[NSURLCache setSharedURLCache:cache];
+
+		syncDataToCommit = [[SuccessfulSyncCommitData alloc] init];
 
 		mediumFormatter = [[NSDateFormatter alloc] init];
 		mediumFormatter.dateStyle = NSDateFormatterMediumStyle;
 		mediumFormatter.timeStyle = NSDateFormatterMediumStyle;
 
 		requestQueue = [[NSOperationQueue alloc] init];
-		requestQueue.maxConcurrentOperationCount = 8;
+		requestQueue.maxConcurrentOperationCount = 4;
 
 		[self restartNotifier];
 
@@ -82,11 +100,11 @@ typedef void (^completionBlockType)(BOOL);
 
 - (void)fetchStatusesForCurrentPullRequestsToMoc:(NSManagedObjectContext *)moc andCallback:(void (^)(BOOL))callback
 {
-	NSArray *prs = [DataItem newOrUpdatedItemsOfType:@"PullRequest" inMoc:moc];
+	NSArray *prs = [DataItem allItemsOfType:@"PullRequest" inMoc:moc];
 
 	if(!prs.count)
 	{
-		if(callback) callback(YES);
+		CALLBACK(YES);
 		return;
 	}
 
@@ -105,24 +123,26 @@ typedef void (^completionBlockType)(BOOL);
 		[self getPagedDataInPath:p.statusesLink
 				startingFromPage:1
 						  params:nil
-				 perPageCallback:^(id data, BOOL lastPage) {
+					extraHeaders:nil
+				 perPageCallback:^BOOL(id data, BOOL lastPage) {
 					 for(NSDictionary *info in data)
 					 {
 						 PRStatus *s = [PRStatus statusWithInfo:info moc:moc];
 						 if(!s.pullRequestId) s.pullRequestId = p.serverId;
 					 }
-				 } finalCallback:^(BOOL success, NSInteger resultCode) {
+					 return NO;
+				 } finalCallback:^(BOOL success, NSInteger resultCode, NSString *etag) {
 					 if(success) succeeded++; else failed++;
 					 if(succeeded+failed==total)
 					 {
 						 if(failed==0)
 						 {
 							 [DataItem nukeDeletedItemsOfType:@"PRStatus" inMoc:moc];
-							 if(callback) callback(YES);
+							 CALLBACK(YES);
 						 }
 						 else
 						 {
-							 if(callback) callback(NO);
+							 CALLBACK(NO);
 						 }
 					 }
 				 }];
@@ -147,7 +167,7 @@ typedef void (^completionBlockType)(BOOL);
 		if(succeded+failed==totalOperations)
 		{
 			[DataItem nukeDeletedItemsOfType:@"PRComment" inMoc:moc];
-			if(callback) callback(failed==0);
+			CALLBACK(failed==0);
 		}
 	};
 
@@ -157,14 +177,14 @@ typedef void (^completionBlockType)(BOOL);
 }
 
 - (void)_fetchCommentsForPullRequests:(NSArray*)prs
-							  issues:(BOOL)issues
-							   toMoc:(NSManagedObjectContext *)moc
-						 andCallback:(void(^)(BOOL success))callback
+							   issues:(BOOL)issues
+								toMoc:(NSManagedObjectContext *)moc
+						  andCallback:(void(^)(BOOL success))callback
 {
 	NSInteger total = prs.count;
 	if(!total)
 	{
-		if(callback) callback(YES);
+		CALLBACK(YES);
 		return;
 	}
 
@@ -182,7 +202,8 @@ typedef void (^completionBlockType)(BOOL);
 		[self getPagedDataInPath:link
 				startingFromPage:1
 						  params:nil
-				 perPageCallback:^(id data, BOOL lastPage) {
+					extraHeaders:nil
+				 perPageCallback:^BOOL(id data, BOOL lastPage) {
 					 for(NSDictionary *info in data)
 					 {
 						 PRComment *c = [PRComment commentWithInfo:info moc:moc];
@@ -196,7 +217,8 @@ typedef void (^completionBlockType)(BOOL);
 								 p.latestReadCommentDate = commentCreation;
 						 }
 					 }
-				 } finalCallback:^(BOOL success, NSInteger resultCode) {
+					 return NO;
+				 } finalCallback:^(BOOL success, NSInteger resultCode, NSString *etag) {
 					 if(success) succeeded++; else failed++;
 					 if(succeeded+failed==total)
 					 {
@@ -215,52 +237,37 @@ typedef void (^completionBlockType)(BOOL);
 			syncContext.parentContext = [AppDelegate shared].dataManager.managedObjectContext;
 			syncContext.undoManager = nil;
 
-			NSArray *items = [PullRequest itemsOfType:@"Repo" surviving:YES inMoc:syncContext];
-			for(DataItem *i in items) i.postSyncAction = @(kPostSyncDelete);
+			NSArray *allRepos = [PullRequest itemsOfType:@"Repo" surviving:YES inMoc:syncContext];
+			for(Repo *r in allRepos) r.postSyncAction = @(kPostSyncDelete);
 
-			items = [PullRequest itemsOfType:@"Org" surviving:YES inMoc:syncContext];
-			for(DataItem *i in items) i.postSyncAction = @(kPostSyncDelete);
-
-			[self syncOrgsToMoc:syncContext andCallback:^(BOOL success) {
-				if(!success)
+			[self syncWatchedReposForUserToMoc:syncContext andCallback:^(BOOL success) {
+				if(success)
 				{
-					[self error:@"orgs"];
-					callback(NO);
+					[DataItem nukeDeletedItemsOfType:@"Repo" inMoc:syncContext];
+
+					BOOL shouldHideByDefault = [Settings shared].hideNewRepositories;
+					for(Repo *r in [DataItem newItemsOfType:@"Repo" inMoc:syncContext])
+					{
+						r.hidden = @(shouldHideByDefault);
+						if(!shouldHideByDefault)
+						{
+							[[AppDelegate shared] postNotificationOfType:kNewRepoAnnouncement forItem:r];
+						}
+					}
+
+					[AppDelegate shared].lastRepoCheck = [NSDate date];
+					if(syncContext.hasChanges) [syncContext save:nil];
 				}
 				else
 				{
-					NSArray *orgs = [Org allItemsOfType:@"Org" inMoc:syncContext];
-					__block NSInteger count=orgs.count+1;
-					__block BOOL ok = YES;
-
-					completionBlockType completionCallback = ^(BOOL success) {
-						count--;
-						if(ok) ok = success;
-						if(count==0 && callback)
-						{
-							if(ok)
-							{
-								[DataItem nukeDeletedItemsOfType:@"Repo" inMoc:syncContext];
-								[DataItem nukeDeletedItemsOfType:@"Org" inMoc:syncContext];
-								[AppDelegate shared].lastRepoCheck = [NSDate date];
-							}
-							else
-							{
-								DLog(@"%@",[NSError errorWithDomain:@"YOUR_ERROR_DOMAIN"
-															   code:101
-														   userInfo:@{NSLocalizedDescriptionKey:@"Error while fetching data from GitHub"}]);
-							}
-							if(ok && syncContext.hasChanges) [syncContext save:nil];
-							callback(ok);
-						}
-					};
-
-					for(Org *r in orgs) [self syncReposForOrg:r.login toMoc:syncContext andCallback:completionCallback];
-					[self syncReposForUserToMoc:syncContext andCallback:completionCallback];
+					DLog(@"%@",[NSError errorWithDomain:@"YOUR_ERROR_DOMAIN"
+												   code:101
+											   userInfo:@{NSLocalizedDescriptionKey:@"Error while fetching data from GitHub"}]);
 				}
+				callback(success);
 			}];
 		}
-		else if(callback) callback(NO);
+		else CALLBACK(NO);
 	}];
 }
 
@@ -270,7 +277,7 @@ typedef void (^completionBlockType)(BOOL);
 
 	if(!prs.count)
 	{
-		if(callback) callback(YES);
+		CALLBACK(YES);
 		return;
 	}
 
@@ -288,7 +295,7 @@ typedef void (^completionBlockType)(BOOL);
 		if(success) succeeded++; else failed++;
 		if(succeeded+failed==totalOperations)
 		{
-			if(callback) callback(failed==0);
+			CALLBACK(failed==0);
 		}
 	};
 
@@ -298,7 +305,8 @@ typedef void (^completionBlockType)(BOOL);
 		{
 			[self getDataInPath:p.issueUrl
 						 params:nil
-					andCallback:^(id data, BOOL lastPage, NSInteger resultCode) {
+				   extraHeaders:nil
+					andCallback:^(id data, BOOL lastPage, NSInteger resultCode, NSString *etag) {
 						if(data)
 						{
 							NSString *assignee = [[data ofk:@"assignee"] ofk:@"login"];
@@ -337,7 +345,7 @@ typedef void (^completionBlockType)(BOOL);
 
 	NSArray *prsToCheck = [pullRequests filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(PullRequest *r, NSDictionary *bindings) {
 		Repo *parent = [Repo itemOfType:@"Repo" serverId:r.repoId moc:moc];
-		return parent.active.boolValue && (parent.postSyncAction.integerValue!=kPostSyncDelete);
+		return (!parent.hidden.boolValue) && (parent.postSyncAction.integerValue!=kPostSyncDelete);
 	}]];
 
 	NSInteger totalOperations = prsToCheck.count;
@@ -354,7 +362,7 @@ typedef void (^completionBlockType)(BOOL);
 		if(success) succeded++; else failed++;
 		if(succeded+failed==totalOperations)
 		{
-			if(callback) callback(failed==0);
+			CALLBACK(failed==0);
 		}
 	};
 
@@ -370,6 +378,7 @@ typedef void (^completionBlockType)(BOOL);
 
 	[self get:[NSString stringWithFormat:@"/repos/%@/pulls/%@",parent.fullName,r.number]
    parameters:nil
+ extraHeaders:nil
 	  success:^(NSHTTPURLResponse *response, id data) {
 
 		  NSDictionary *mergeInfo = [data ofk:@"merged_by"];
@@ -420,11 +429,11 @@ typedef void (^completionBlockType)(BOOL);
 				  case kPullRequestHandlingKeepNone: {}
 			  }
 		  }
-		  if(callback) callback(YES);
+		  CALLBACK(YES);
 
 	  } failure:^(NSHTTPURLResponse *response, id data, NSError *error) {
 		  r.postSyncAction = @(kPostSyncDoNothing); // don't delete this, we couldn't check, play it safe
-		  if(callback) callback(NO);
+		  CALLBACK(NO);
 	  }];
 }
 
@@ -440,7 +449,7 @@ typedef void (^completionBlockType)(BOOL);
 				[self syncToMoc:syncContext andCallback:callback];
 			}];
 		}
-		else if(callback) callback(NO);
+		else CALLBACK(NO);
 	}];
 }
 
@@ -449,95 +458,264 @@ typedef void (^completionBlockType)(BOOL);
 	if([AppDelegate shared].lastRepoCheck &&
 	   ([[NSDate date] timeIntervalSinceDate:[AppDelegate shared].lastRepoCheck] < [Settings shared].newRepoCheckPeriod*3600.0))
 	{
-		if(callback) callback();
-		return;
+		CALLBACK();
 	}
-
-	[self fetchRepositoriesAndCallback:^(BOOL success) {
-		if(success)
-		{
-			NSManagedObjectContext *moc = [AppDelegate shared].dataManager.managedObjectContext;
-			for(Repo *r in [Repo newItemsOfType:@"Repo" inMoc:moc])
-			{
-				if([Settings shared].repoSubscriptionPolicy == kRepoAutoSubscribeNone)
-				{
-					[[AppDelegate shared] postNotificationOfType:kNewRepoAnnouncement forItem:r];
-				}
-				else if([Settings shared].repoSubscriptionPolicy == kRepoAutoSubscribeParentsOnly)
-				{
-					if(!r.fork.boolValue) r.active = @YES;
-					[[AppDelegate shared] postNotificationOfType:kNewRepoSubscribed forItem:r];
-				}
-				else
-				{
-					r.active = @YES;
-					[[AppDelegate shared] postNotificationOfType:kNewRepoSubscribed forItem:r];
-				}
-			}
-		}
-		if(callback) callback();
-	}];
+	else
+	{
+		[self fetchRepositoriesAndCallback:^(BOOL success) {
+			CALLBACK();
+		}];
+	}
 }
 
-- (void)syncToMoc:(NSManagedObjectContext *)moc andCallback:(void(^)(BOOL success))callback
+extern NSDateFormatter *_syncDateFormatter;
+
+- (void)markDirtyRepoIds:(NSMutableSet *)repoIdsToMarkDirty
+usingReceivedEventsInMoc:(NSManagedObjectContext *)moc
+			 andCallback:(void(^)(BOOL success))callback
 {
-	NSArray *prs = [PullRequest itemsOfType:@"PullRequest" surviving:YES inMoc:moc];
-	for(PullRequest *r in prs)
-		if(r.condition.integerValue == kPullRequestConditionOpen)
-			r.postSyncAction = @(kPostSyncDelete);
+	NSString *latestEtag = [Settings shared].latestReceivedEventEtag;
+	NSDate *latestDate = [Settings shared].latestReceivedEventDateProcessed;
 
-	NSArray *activeRepos = [Repo activeReposInMoc:moc];
-	[self fetchPullRequestsForRepos:activeRepos toMoc:moc andCallback:^(BOOL success) {
-		if(success)
-		{
-			[self updatePullRequestsInMoc:moc andCallback:^(BOOL success) {
-				if(success)
-				{
-					// do not cleanup PRs before because some "deleted" ones will turn to merged or closed ones
-					[DataItem nukeDeletedItemsOfType:@"Repo" inMoc:moc];
-					[DataItem nukeDeletedItemsOfType:@"PullRequest" inMoc:moc];
+	syncDataToCommit.latestReceivedEventDate = latestDate;
+	BOOL needFirstDateOnly = ([latestDate isEqualToDate:[NSDate distantPast]]);
 
-					NSArray *surviving = [PullRequest itemsOfType:@"PullRequest" surviving:YES inMoc:moc];
-					for(PullRequest *r in surviving) [r postProcess];
-
-					if(moc.hasChanges)
-					{
-						DLog(@"Database dirty after sync, saving");
-						[moc save:nil];
-					}
-				}
-				if(callback) callback(success);
-			}];
-		}
-		else if(callback) callback(NO);
-	}];
+	[self getPagedDataInPath:[NSString stringWithFormat:@"/users/%@/received_events",[Settings shared].localUser]
+			startingFromPage:1
+					  params:nil
+				extraHeaders:latestEtag ? @{ @"If-None-Match": latestEtag } : nil
+			 perPageCallback:^BOOL(id data, BOOL lastPage) {
+				 for(NSDictionary *d in data)
+				 {
+					 NSDate *eventDate = [_syncDateFormatter dateFromString:d[@"created_at"]];
+					 if([latestDate compare:eventDate]==NSOrderedAscending) // this is where we came in
+					 {
+						 DLog(@"New event at %@",eventDate);
+						 NSNumber *repoId = d[@"repo"][@"id"];
+						 if(repoId) [repoIdsToMarkDirty addObject:repoId];
+						 if([syncDataToCommit.latestReceivedEventDate compare:eventDate]==NSOrderedAscending)
+						 {
+							 syncDataToCommit.latestReceivedEventDate = eventDate;
+							 if(needFirstDateOnly)
+							 {
+								 DLog(@"First sync, all repos are dirty so we don't need to read further, we have the latest received event date: %@",syncDataToCommit.latestReceivedEventDate);
+								 return YES;
+							 }
+						 }
+					 }
+					 else
+					 {
+						 DLog(@"The rest of these received events we've processed, stopping event parsing");
+						 return YES;
+					 }
+				 }
+				 return NO;
+			 } finalCallback:^(BOOL success, NSInteger resultCode, NSString *etag) {
+				 syncDataToCommit.latestReceivedEventEtag = etag;
+				 CALLBACK(success);
+			 }];
 }
 
-- (void)updatePullRequestsInMoc:(NSManagedObjectContext *)moc andCallback:(void(^)(BOOL success))callback
+- (void)markDirtyRepoIds:(NSMutableSet *)repoIdsToMarkDirty
+	usingUserEventsInMoc:(NSManagedObjectContext *)moc
+			 andCallback:(void(^)(BOOL success))callback
 {
-	NSInteger totalOperations = 4;
-	__block NSInteger succeded = 0;
-	__block NSInteger failed = 0;
+	NSString *latestEtag = [Settings shared].latestUserEventEtag;
+	NSDate *latestDate = [Settings shared].latestUserEventDateProcessed;
+
+	syncDataToCommit.latestUserEventDate = latestDate;
+	BOOL needFirstDateOnly = ([latestDate isEqualToDate:[NSDate distantPast]]);
+
+	[self getPagedDataInPath:[NSString stringWithFormat:@"/users/%@/events",[Settings shared].localUser]
+			startingFromPage:1
+					  params:nil
+				extraHeaders:latestEtag ? @{ @"If-None-Match": latestEtag } : nil
+			 perPageCallback:^BOOL(id data, BOOL lastPage) {
+				 for(NSDictionary *d in data)
+				 {
+					 NSDate *eventDate = [_syncDateFormatter dateFromString:d[@"created_at"]];
+					 if([latestDate compare:eventDate]==NSOrderedAscending) // this is where we came in
+					 {
+						 DLog(@"New event at %@",eventDate);
+						 NSNumber *repoId = d[@"repo"][@"id"];
+						 if(repoId) [repoIdsToMarkDirty addObject:repoId];
+						 if([syncDataToCommit.latestUserEventDate compare:eventDate]==NSOrderedAscending)
+						 {
+							 syncDataToCommit.latestUserEventDate = eventDate;
+							 if(needFirstDateOnly)
+							 {
+								 DLog(@"First sync, all repos are dirty so we don't need to read further, we have the latest user event date: %@",syncDataToCommit.latestUserEventDate);
+								 return YES;
+							 }
+						 }
+					 }
+					 else
+					 {
+						 DLog(@"The rest of these user events we've processed, stopping event parsing");
+						 return YES;
+					 }
+				 }
+				 return NO;
+			 } finalCallback:^(BOOL success, NSInteger resultCode, NSString *etag) {
+				 syncDataToCommit.latestUserEventEtag = etag;
+				 CALLBACK(success);
+			 }];
+}
+
+- (void)markDirtyReposInMoc:(NSManagedObjectContext *)moc andCallback:(void(^)(BOOL success))callback
+{
+	NSInteger totalOperations = 2;
+
+	__block NSInteger succeded = 0, failed = 0;
+
+	NSMutableSet *repoIdsToMarkDirty = [NSMutableSet set];
 
 	completionBlockType completionCallback = ^(BOOL success) {
 		if(success) succeded++; else failed++;
 		if(succeded+failed==totalOperations)
 		{
-			if(callback) callback(failed==0);
+			BOOL ok = (failed==0);
+			if(ok)
+			{
+				[Repo markDirtyReposWithIds:repoIdsToMarkDirty inMoc:moc];
+			}
+			CALLBACK(ok);
 		}
 	};
-	
+
+	[self markDirtyRepoIds:repoIdsToMarkDirty usingUserEventsInMoc:moc andCallback:completionCallback];
+	[self markDirtyRepoIds:repoIdsToMarkDirty usingReceivedEventsInMoc:moc andCallback:completionCallback];
+}
+
+- (void)syncToMoc:(NSManagedObjectContext *)moc andCallback:(void(^)(BOOL success))callback
+{
+	[self markDirtyReposInMoc:moc
+				  andCallback:^(BOOL success) {
+					  if(success)
+					  {
+						  NSArray *hiddenRepos = [Repo hiddenReposInMoc:moc];
+						  for(Repo *r in hiddenRepos) [r removeAllRelatedPullRequests];
+						  [self fetchPullRequestsForRepos:[Repo dirtyReposInMoc:moc]
+													toMoc:moc
+											  andCallback:^(BOOL success) {
+												  if(success)
+												  {
+													  [self updatePullRequestsInMoc:moc andCallback:^(BOOL success) {
+														  if(success) [self syncSucceededInMoc:moc];
+														  CALLBACK(success);
+													  }];
+												  }
+												  else CALLBACK(NO);
+											  }];
+					  }
+					  else CALLBACK(NO);
+				  }];
+}
+
+- (void)syncTransactionSucceeded
+{
+	if(syncDataToCommit.latestReceivedEventDate)
+	{
+		[Settings shared].latestReceivedEventDateProcessed = syncDataToCommit.latestReceivedEventDate;
+		syncDataToCommit.latestReceivedEventDate = nil;
+	}
+	if(syncDataToCommit.latestReceivedEventEtag)
+	{
+		[Settings shared].latestReceivedEventEtag = syncDataToCommit.latestReceivedEventEtag;
+		syncDataToCommit.latestReceivedEventEtag = nil;
+	}
+	if(syncDataToCommit.latestUserEventDate)
+	{
+		[Settings shared].latestUserEventDateProcessed = syncDataToCommit.latestUserEventDate;
+		syncDataToCommit.latestUserEventDate = nil;
+	}
+	if(syncDataToCommit.latestUserEventEtag)
+	{
+		[Settings shared].latestUserEventEtag = syncDataToCommit.latestUserEventEtag;
+		syncDataToCommit.latestUserEventEtag = nil;
+	}
+}
+
+- (void)syncSucceededInMoc:(NSManagedObjectContext *)moc
+{
+	// do not cleanup PRs before because some "deleted" ones will turn to merged or closed ones
+	[DataItem nukeDeletedItemsOfType:@"Repo" inMoc:moc];
+	[DataItem nukeDeletedItemsOfType:@"PullRequest" inMoc:moc];
+
+	NSArray *surviving = [PullRequest itemsOfType:@"PullRequest" surviving:YES inMoc:moc];
+	for(PullRequest *r in surviving) [r postProcess];
+
+	if(moc.hasChanges)
+	{
+		DLog(@"Database dirty after sync, saving");
+		NSError *error = nil;
+		[moc save:&error];
+		if(!error) [self syncTransactionSucceeded];
+	}
+	else
+	{
+		DLog(@"No database changes after sync");
+		[self syncTransactionSucceeded];
+	}
+
+	if([Settings shared].showStatusItems)
+	{
+		self.successfulRefreshesSinceLastStatusCheck++;
+	}
+}
+
+- (void)updatePullRequestsInMoc:(NSManagedObjectContext *)moc andCallback:(void(^)(BOOL success))callback
+{
+	BOOL willScanForStatuses = [self shouldScanForStatusesInMoc:moc];
+
+	NSInteger totalOperations = 3;
+	if(willScanForStatuses) totalOperations++;
+
+	__block NSInteger succeded = 0, failed = 0;
+
+	completionBlockType completionCallback = ^(BOOL success) {
+		if(success) succeded++; else failed++;
+		if(succeded+failed==totalOperations)
+		{
+			CALLBACK(failed==0);
+		}
+	};
+
+	if(willScanForStatuses)
+		[self fetchStatusesForCurrentPullRequestsToMoc:moc andCallback:completionCallback];
+
 	[self fetchCommentsForCurrentPullRequestsToMoc:moc andCallback:completionCallback];
-	[self fetchStatusesForCurrentPullRequestsToMoc:moc andCallback:completionCallback];
 	[self checkPrClosuresInMoc:moc andCallback:completionCallback];
 	[self detectAssignedPullRequestsInMoc:moc andCallback:completionCallback];
+}
+
+- (BOOL)shouldScanForStatusesInMoc:(NSManagedObjectContext *)moc
+{
+	if(self.successfulRefreshesSinceLastStatusCheck % [Settings shared].statusItemRefreshInterval == 0)
+	{
+		if([Settings shared].showStatusItems)
+		{
+			self.successfulRefreshesSinceLastStatusCheck = 0;
+			return YES;
+		}
+		[self clearAllStatusObjectsInMoc:moc];
+	}
+	return NO;
+}
+
+- (void)clearAllStatusObjectsInMoc:(NSManagedObjectContext *)moc
+{
+	for(PRStatus *s in [DataItem allItemsOfType:@"PRStatus" inMoc:moc])
+	{
+		[moc deleteObject:s];
+	}
 }
 
 - (void)fetchPullRequestsForRepos:(NSArray *)repos toMoc:(NSManagedObjectContext *)moc andCallback:(void(^)(BOOL success))callback
 {
 	if(!repos.count)
 	{
-		if(callback) callback(YES);
+		CALLBACK(YES);
 		return;
 	}
 	NSInteger total = repos.count;
@@ -545,15 +723,22 @@ typedef void (^completionBlockType)(BOOL);
 	__block NSInteger failed = 0;
 	for(Repo *r in repos)
 	{
+		for(PullRequest *pr in [PullRequest pullRequestsForRepoId:r.serverId inMoc:moc])
+			if(pr.condition.integerValue == kPullRequestConditionOpen)
+				pr.postSyncAction = @(kPostSyncDelete);
+
 		[self getPagedDataInPath:[NSString stringWithFormat:@"/repos/%@/pulls",r.fullName]
 				startingFromPage:1
 						  params:nil
-				 perPageCallback:^(id data, BOOL lastPage) {
+					extraHeaders:nil
+				 perPageCallback:^BOOL(id data, BOOL lastPage) {
 					 for(NSDictionary *info in data)
 					 {
 						 [PullRequest pullRequestWithInfo:info moc:moc];
 					 }
-				 } finalCallback:^(BOOL success, NSInteger resultCode) {
+					 return NO;
+				 } finalCallback:^(BOOL success, NSInteger resultCode, NSString *etag) {
+					 r.dirty = @(NO);
 					 if(success)
 					 {
 						 succeeded++;
@@ -578,45 +763,38 @@ typedef void (^completionBlockType)(BOOL);
 	}
 }
 
-- (void)syncReposForUserToMoc:(NSManagedObjectContext *)moc andCallback:(void(^)(BOOL success))callback
+- (void)syncWatchedReposForUserToMoc:(NSManagedObjectContext *)moc andCallback:(void(^)(BOOL success))callback
 {
-	[self getPagedDataInPath:@"/user/repos"
+	[self getPagedDataInPath:@"/user/subscriptions"
 			startingFromPage:1
 					  params:nil
-			 perPageCallback:^(id data, BOOL lastPage) {
+				extraHeaders:nil
+			 perPageCallback:^BOOL(id data, BOOL lastPage) {
 				 for(NSDictionary *info in data)
 				 {
-					 [Repo repoWithInfo:info moc:moc];
+                     if([[info ofk:@"private"] boolValue])
+                     {
+                         NSDictionary *permissions = [info ofk:@"permissions"];
+                         if([[permissions ofk:@"pull"] boolValue] ||
+                            [[permissions ofk:@"push"] boolValue] ||
+                            [[permissions ofk:@"admin"] boolValue])
+                         {
+                             [Repo repoWithInfo:info moc:moc];
+                         }
+                         else
+                         {
+                             DLog(@"Watched private repository '%@' seems to be inaccessible, skipping",[info ofk:@"full_name"]);
+                             continue;
+                         }
+                     }
+                     else
+                     {
+                         [Repo repoWithInfo:info moc:moc];
+                     }
 				 }
-			 } finalCallback:^(BOOL success, NSInteger resultCode) {
-				 if(callback) callback(success);
-			 }];
-}
-
-- (void)syncReposForOrg:(NSString*)orgLogin toMoc:(NSManagedObjectContext *)moc andCallback:(void(^)(BOOL success))callback
-{
-	[self getPagedDataInPath:[NSString stringWithFormat:@"/orgs/%@/repos",orgLogin]
-			startingFromPage:1
-					  params:nil
-			 perPageCallback:^(id data, BOOL lastPage) {
-				 for(NSDictionary *info in data)
-				 {
-					 [Repo repoWithInfo:info moc:moc];
-				 }
-			 } finalCallback:^(BOOL success, NSInteger resultCode) {
-				 if(callback) callback(success);
-			 }];
-}
-
-- (void)syncOrgsToMoc:(NSManagedObjectContext *)moc andCallback:(void(^)(BOOL success))callback
-{
-	[self getPagedDataInPath:@"/user/orgs"
-			startingFromPage:1
-					  params:nil
-			 perPageCallback:^(id data, BOOL lastPage) {
-				 for(NSDictionary *info in data) [Org orgWithInfo:info moc:moc];
-			 } finalCallback:^(BOOL success, NSInteger resultCode) {
-				 if(callback) callback(success);
+				 return NO;
+			 } finalCallback:^(BOOL success, NSInteger resultCode, NSString *etag) {
+				 CALLBACK(success);
 			 }];
 }
 
@@ -624,29 +802,31 @@ typedef void (^completionBlockType)(BOOL);
 {
 	[self getDataInPath:@"/user"
 				 params:nil
-			andCallback:^(id data, BOOL lastPage, NSInteger resultCode) {
+		   extraHeaders:nil
+			andCallback:^(id data, BOOL lastPage, NSInteger resultCode, NSString *etag) {
 				if(data)
 				{
 					[Settings shared].localUser = [data ofk:@"login"];
 					[Settings shared].localUserId = [data ofk:@"id"];
 					[[NSUserDefaults standardUserDefaults] synchronize];
-					if(callback) callback(YES);
+					CALLBACK(YES);
 				}
-				else if(callback) callback(NO);
+				else CALLBACK(NO);
 			}];
 }
 
 - (void)getPagedDataInPath:(NSString*)path
-		 startingFromPage:(NSInteger)page
-				   params:(NSDictionary*)params
-		  perPageCallback:(void(^)(id data, BOOL lastPage))pageCallback
-			finalCallback:(void(^)(BOOL success, NSInteger resultCode))finalCallback
+		  startingFromPage:(NSInteger)page
+					params:(NSDictionary*)params
+			  extraHeaders:(NSDictionary *)extraHeaders
+		   perPageCallback:(BOOL(^)(id data, BOOL lastPage))pageCallback
+			 finalCallback:(void(^)(BOOL success, NSInteger resultCode, NSString *etag))finalCallback
 {
 	if(!path.length)
 	{
 		// handling empty or null fields as success, since we don't want syncs to fail, we simply have nothing to process
 		dispatch_async(dispatch_get_main_queue(), ^{
-			finalCallback(YES, -1);
+			finalCallback(YES, -1, nil);
 		});
 		return;
 	}
@@ -658,80 +838,92 @@ typedef void (^completionBlockType)(BOOL);
 	mparams[@"per_page"] = @100;
 	[self getDataInPath:path
 				 params:mparams
-			andCallback:^(id data, BOOL lastPage, NSInteger resultCode) {
+		   extraHeaders:extraHeaders
+			andCallback:^(id data, BOOL lastPage, NSInteger resultCode, NSString *etag) {
 				if(data)
 				{
 					if(pageCallback)
 					{
-						pageCallback(data,lastPage);
+						if(pageCallback(data,lastPage)) lastPage = YES;
 					}
 
 					if(lastPage)
 					{
-						finalCallback(YES, resultCode);
+						finalCallback(YES, resultCode, etag);
 					}
 					else
 					{
 						[self getPagedDataInPath:path
 								startingFromPage:page+1
 										  params:params
+									extraHeaders:extraHeaders
 								 perPageCallback:pageCallback
 								   finalCallback:finalCallback];
 					}
 				}
 				else
 				{
-					finalCallback(NO, resultCode);
+					finalCallback((resultCode==304), resultCode, etag);
 				}
 			}];
 }
 
-- (void)getDataInPath:(NSString*)path params:(NSDictionary*)params andCallback:(void(^)(id data, BOOL lastPage, NSInteger resultCode))callback
+- (void)getDataInPath:(NSString*)path
+			   params:(NSDictionary *)params
+		 extraHeaders:(NSDictionary *)extraHeaders
+		  andCallback:(void(^)(id data, BOOL lastPage, NSInteger resultCode, NSString *etag))callback
 {
 	[self get:path
    parameters:params
+ extraHeaders:extraHeaders
 	  success:^(NSHTTPURLResponse *response, id data) {
-		  self.requestsRemaining = [[response allHeaderFields][@"X-RateLimit-Remaining"] floatValue];
-		  self.requestsLimit = [[response allHeaderFields][@"X-RateLimit-Limit"] floatValue];
-		  float epochSeconds = [[response allHeaderFields][@"X-RateLimit-Reset"] floatValue];
+
+		  NSDictionary *allHeaders = response.allHeaderFields;
+
+		  self.requestsRemaining = [allHeaders[@"X-RateLimit-Remaining"] floatValue];
+		  self.requestsLimit = [allHeaders[@"X-RateLimit-Limit"] floatValue];
+		  float epochSeconds = [allHeaders[@"X-RateLimit-Reset"] floatValue];
 		  NSDate *date = [NSDate dateWithTimeIntervalSince1970:epochSeconds];
 		  self.resetDate = [mediumFormatter stringFromDate:date];
 		  [[NSNotificationCenter defaultCenter] postNotificationName:RATE_UPDATE_NOTIFICATION
 															  object:nil
 															userInfo:nil];
-		  if(callback) callback(data, [API lastPage:response], response.statusCode);
+		  CALLBACK(data, [API lastPage:response], response.statusCode, allHeaders[@"Etag"]);
 	  } failure:^(NSHTTPURLResponse *response, id data, NSError *error) {
-		  DLog(@"Failure for %@: %@",path,error);
-		  if(callback) callback(nil, NO, response.statusCode);
+		  NSInteger code = response.statusCode;
+		  if(code==304) DLog(@"No change reported (304)"); else DLog(@"Failure for %@: %@",path,error);
+		  CALLBACK(nil, NO, code, nil);
 	  }];
 }
 
 - (void)getRateLimitAndCallback:(void (^)(long long, long long, long long))callback
 {
 	[self get:@"/rate_limit"
-	  parameters:nil
-		 success:^(NSHTTPURLResponse *response, id data) {
-			 long long requestsRemaining = [[response allHeaderFields][@"X-RateLimit-Remaining"] longLongValue];
-			 long long requestLimit = [[response allHeaderFields][@"X-RateLimit-Limit"] longLongValue];
-			 long long epochSeconds = [[response allHeaderFields][@"X-RateLimit-Reset"] longLongValue];
-			 if(callback) callback(requestsRemaining,requestLimit,epochSeconds);
-		 } failure:^(NSHTTPURLResponse *response, id data, NSError *error) {
-			 if(callback)
-			 {
-				 if(response.statusCode==404 && data && ![[data ofk:@"message"] isEqualToString:@"Not Found"])
-					 callback(10000,10000,0);
-				 else
-					 callback(-1, -1, -1);
-			 }
-		 }];
+   parameters:nil
+ extraHeaders:nil
+	  success:^(NSHTTPURLResponse *response, id data) {
+		  long long requestsRemaining = [[response allHeaderFields][@"X-RateLimit-Remaining"] longLongValue];
+		  long long requestLimit = [[response allHeaderFields][@"X-RateLimit-Limit"] longLongValue];
+		  long long epochSeconds = [[response allHeaderFields][@"X-RateLimit-Reset"] longLongValue];
+		  CALLBACK(requestsRemaining,requestLimit,epochSeconds);
+	  } failure:^(NSHTTPURLResponse *response, id data, NSError *error) {
+		  if(callback)
+		  {
+			  if(response.statusCode==404 && data && ![[data ofk:@"message"] isEqualToString:@"Not Found"])
+				  callback(10000,10000,0);
+			  else
+				  callback(-1, -1, -1);
+		  }
+	  }];
 }
 
 - (void)testApiAndCallback:(void (^)(NSError *))callback
 {
 	[self get:@"/rate_limit"
    parameters:nil
+ extraHeaders:nil
 	  success:^(NSHTTPURLResponse *response, id data) {
-		  if(callback) callback(nil);
+		  CALLBACK(nil);
 	  } failure:^(NSHTTPURLResponse *response, id data, NSError *error) {
 		  if(callback)
 		  {
@@ -751,9 +943,10 @@ typedef void (^completionBlockType)(BOOL);
 }
 
 - (NSOperation *)get:(NSString *)path
-		 parameters:(NSDictionary *)params
-			success:(void(^)(NSHTTPURLResponse *response, id data))successCallback
-			failure:(void(^)(NSHTTPURLResponse *response, id data, NSError *error))failureCallback
+		  parameters:(NSDictionary *)params
+		extraHeaders:(NSDictionary *)extraHeaders
+			 success:(void(^)(NSHTTPURLResponse *response, id data))successCallback
+			 failure:(void(^)(NSHTTPURLResponse *response, id data, NSError *error))failureCallback
 {
 	[self networkIndicationStart];
 
@@ -795,13 +988,30 @@ typedef void (^completionBlockType)(BOOL);
 		NSMutableURLRequest *r = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:expandedPath]
 															  cachePolicy:NSURLRequestUseProtocolCachePolicy
 														  timeoutInterval:NETWORK_TIMEOUT];
-		[r setValue:@"Trailer" forHTTPHeaderField:@"User-Agent"];
+
+		[r setValue:[self userAgent] forHTTPHeaderField:@"User-Agent"];
+
 		[r setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
+
 		if(authToken) [r setValue:[@"token " stringByAppendingString:authToken] forHTTPHeaderField:@"Authorization"];
+
+		for(NSString *extraHeaderKey in extraHeaders)
+		{
+			DLog(@"Custom header: %@=%@",extraHeaderKey,extraHeaders[extraHeaderKey]);
+			[r setValue:extraHeaders[extraHeaderKey] forHTTPHeaderField:extraHeaderKey];
+		}
 
 		NSError *error;
 		NSHTTPURLResponse *response;
+
+#ifdef DEBUG
+		NSDate *startTime = [NSDate date];
+#endif
 		NSData *data = [NSURLConnection sendSynchronousRequest:r returningResponse:&response error:&error];
+#ifdef DEBUG
+		NSTimeInterval networkTime = [[NSDate date] timeIntervalSinceDate:startTime];
+#endif
+
 		id parsedData = nil;
 		if(data.length) parsedData = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
 
@@ -811,7 +1021,7 @@ typedef void (^completionBlockType)(BOOL);
 		}
 		if(error)
 		{
-			DLog(@"GET %@ - FAILED: %@",expandedPath,error);
+			DLog(@"GET %@ - FAILED: %@",expandedPath,error.localizedDescription);
 			if(failureCallback)
 			{
 				dispatch_async(dispatch_get_main_queue(), ^{
@@ -821,7 +1031,7 @@ typedef void (^completionBlockType)(BOOL);
 		}
 		else
 		{
-			DLog(@"GET %@ - RESULT: %ld",expandedPath,(long)response.statusCode);
+			DLog(@"GET %@ - RESULT: %ld, %f sec.",expandedPath,(long)response.statusCode,networkTime);
 			if(successCallback)
 			{
 				dispatch_async(dispatch_get_main_queue(), ^{
@@ -838,7 +1048,7 @@ typedef void (^completionBlockType)(BOOL);
 }
 
 // warning: now calls back on thread!!
-- (NSOperation *)getImage:(NSString *)path
+- (NSOperation *)getImage:(NSURL *)url
 				  success:(void(^)(NSHTTPURLResponse *response, NSData *imageData))successCallback
 				  failure:(void(^)(NSHTTPURLResponse *response, NSError *error))failureCallback
 {
@@ -850,10 +1060,10 @@ typedef void (^completionBlockType)(BOOL);
 
 	NSBlockOperation *o = [NSBlockOperation blockOperationWithBlock:^{
 
-		NSMutableURLRequest *r = [[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:path]
-															  cachePolicy:NSURLRequestReturnCacheDataElseLoad
+		NSMutableURLRequest *r = [[NSMutableURLRequest alloc] initWithURL:url
+															  cachePolicy:NSURLRequestUseProtocolCachePolicy
 														  timeoutInterval:NETWORK_TIMEOUT];
-		[r setValue:@"Trailer" forHTTPHeaderField:@"User-Agent"];
+		[r setValue:[self userAgent] forHTTPHeaderField:@"User-Agent"];
 
 		NSError *error;
 		NSHTTPURLResponse *response;
@@ -864,7 +1074,7 @@ typedef void (^completionBlockType)(BOOL);
 		}
 		if(error)
 		{
-			DLog(@"GET IMAGE %@ - FAILED: %@",path,error);
+			//DLog(@"IMAGE %@ - FAILED: %@",path,error);
 			if(failureCallback)
 			{
                 failureCallback(response, error);
@@ -872,7 +1082,7 @@ typedef void (^completionBlockType)(BOOL);
 		}
 		else
 		{
-			DLog(@"GET IMAGE %@ - RESULT: %ld",path,(long)response.statusCode);
+			//DLog(@"IMAGE %@ - RESULT: %ld",path,(long)response.statusCode);
 			if(successCallback)
 			{
 				if(data.length)
@@ -891,6 +1101,23 @@ typedef void (^completionBlockType)(BOOL);
 	o.queuePriority = NSOperationQueuePriorityVeryLow;
 	[requestQueue addOperation:o];
 	return o;
+}
+
+- (NSString *)userAgent
+{
+#ifdef DEBUG
+	#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
+		return [NSString stringWithFormat:@"HouseTrip-Trailer-v%@-iOS-Development",[AppDelegate shared].currentAppVersion];
+	#else
+		return [NSString stringWithFormat:@"HouseTrip-Trailer-v%@-OSX-Development",[AppDelegate shared].currentAppVersion];
+	#endif
+#else
+	#ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
+		return [NSString stringWithFormat:@"HouseTrip-Trailer-v%@-iOS-Release",[AppDelegate shared].currentAppVersion];
+	#else
+		return [NSString stringWithFormat:@"HouseTrip-Trailer-v%@-OSX-Release",[AppDelegate shared].currentAppVersion];
+	#endif
+#endif
 }
 
 - (void)networkIndicationStart
@@ -946,40 +1173,37 @@ typedef void (^completionBlockType)(BOOL);
     }
 }
 
-- (BOOL)haveCachedImage:(NSString *)path
-                forSize:(CGSize)imageSize
-     tryLoadAndCallback:(void (^)(IMAGE_CLASS *image))callbackOrNil
+- (BOOL)haveCachedAvatar:(NSString *)path
+	  tryLoadAndCallback:(void (^)(IMAGE_CLASS *image))callbackOrNil
 {
-    // mix image path, size, and app version into one md5
-	NSString *currentAppVersion = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"];
-    NSString *imageKey = [[NSString stringWithFormat:@"%@ %f %f %@",
-                           path,
-                           imageSize.width,
-                           imageSize.height,
-                           currentAppVersion] md5hash];
-
+	NSURLComponents *c = [NSURLComponents componentsWithString:path];
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
-    NSString *imagePath = [cacheDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"imgcache-%@-%ld", imageKey, (long)GLOBAL_SCREEN_SCALE]];
+	c.query = [NSString stringWithFormat:@"s=%.0f",40.0*GLOBAL_SCREEN_SCALE];
 #else
-    NSString *imagePath = [cacheDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"imgcache-%@", imageKey]];
+	c.query = [NSString stringWithFormat:@"s=%.0f",88.0];
 #endif
+	NSURL *imageURL = c.URL;
+    NSString *imageKey = [NSString stringWithFormat:@"%@ %@",
+						  imageURL.absoluteString,
+						  [AppDelegate shared].currentAppVersion];
+
+    NSString *cachePath = [cacheDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"imgcache-%@", [imageKey md5hash]]];
 
     NSFileManager *fileManager = [NSFileManager defaultManager];
-    if([fileManager fileExistsAtPath:imagePath])
+    if([fileManager fileExistsAtPath:cachePath])
     {
-		IMAGE_CLASS *ret;
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
-		CFDataRef imgData = (__bridge CFDataRef)[NSData dataWithContentsOfFile:imagePath];
+		CFDataRef imgData = (__bridge CFDataRef)[NSData dataWithContentsOfFile:cachePath];
 		CGDataProviderRef imgDataProvider = CGDataProviderCreateWithCFData (imgData);
-		CGImageRef cfImage = CGImageCreateWithPNGDataProvider(imgDataProvider, NULL, false, kCGRenderingIntentDefault);
+		CGImageRef cfImage = CGImageCreateWithJPEGDataProvider(imgDataProvider, NULL, false, kCGRenderingIntentDefault);
 		CGDataProviderRelease(imgDataProvider);
 
-		ret = [[UIImage alloc] initWithCGImage:cfImage
-										 scale:GLOBAL_SCREEN_SCALE
-								   orientation:UIImageOrientationUp];
+		UIImage *ret = [[UIImage alloc] initWithCGImage:cfImage
+												  scale:GLOBAL_SCREEN_SCALE
+											orientation:UIImageOrientationUp];
 		CGImageRelease(cfImage);
 #else
-        ret = [[NSImage alloc] initWithContentsOfFile:imagePath];
+        NSImage *ret = [[NSImage alloc] initWithContentsOfFile:cachePath];
 #endif
         if(ret)
         {
@@ -988,24 +1212,27 @@ typedef void (^completionBlockType)(BOOL);
         }
         else
         {
-            [fileManager removeItemAtPath:imagePath error:nil];
+            [fileManager removeItemAtPath:cachePath error:nil];
         }
     }
 
     if(callbackOrNil)
     {
-        [self getImage:path
+        [self getImage:imageURL
                success:^(NSHTTPURLResponse *response, NSData *imageData) {
                    id image = nil;
                    if(imageData)
                    {
+					   @autoreleasepool
+					   {
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
-                       image = [[UIImage imageWithData:imageData] scaleToFillSize:imageSize];
-                       [UIImagePNGRepresentation(image) writeToFile:imagePath atomically:YES];
+						   image = [UIImage imageWithData:imageData scale:GLOBAL_SCREEN_SCALE];
+						   [UIImageJPEGRepresentation(image, 1.0) writeToFile:cachePath atomically:YES];
 #else
-                       image = [[[NSImage alloc] initWithData:imageData] scaleToFillSize:imageSize];
-                       [[image TIFFRepresentation] writeToFile:imagePath atomically:YES];
+						   image = [[NSImage alloc] initWithData:imageData];
+						   [[image TIFFRepresentation] writeToFile:cachePath atomically:YES];
 #endif
+					   }
                    }
                    dispatch_async(dispatch_get_main_queue(), ^{
                        callbackOrNil(image);
@@ -1040,7 +1267,7 @@ typedef void (^completionBlockType)(BOOL);
 		else
 			return [NSString stringWithFormat:@"Updated %ld seconds ago",(long)ago];
 	}
-
+	
 }
 
 @end

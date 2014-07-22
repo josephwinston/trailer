@@ -2,6 +2,7 @@
 @interface PRItemView ()
 {
 	NSTrackingArea *trackingArea;
+	BOOL dragging;
 }
 @end
 
@@ -52,7 +53,7 @@ static CGColorRef _highlightColor;
     self = [super init];
     if (self)
 	{
-		_delegate = delegate;
+		self.delegate = delegate;
 		_userInfo = userInfo;
 
 		NSInteger _commentsNew = 0;
@@ -120,7 +121,8 @@ static CGColorRef _highlightColor;
 		CGFloat shift = -4.0;
 		if(showAvatar)
 		{
-			RemoteImageView *userImage = [[RemoteImageView alloc] initWithFrame:CGRectMake(LEFTPADDING, (self.bounds.size.height-AVATAR_SIZE)*0.5, AVATAR_SIZE, AVATAR_SIZE) url:pullRequest.userAvatarUrl];
+			RemoteImageView *userImage = [[RemoteImageView alloc] initWithFrame:CGRectMake(LEFTPADDING, (self.bounds.size.height-AVATAR_SIZE)*0.5, AVATAR_SIZE, AVATAR_SIZE)
+																			url:pullRequest.userAvatarUrl];
 			[self addSubview:userImage];
 			shift = AVATAR_PADDING+AVATAR_SIZE;
 		}
@@ -229,19 +231,26 @@ static CGColorRef _highlightColor;
 	}
 }
 
-- (void)mouseDown:(NSEvent*) event
+- (void)mouseUp:(NSEvent *)theEvent
 {
-	BOOL isAlternative = ((event.modifierFlags & NSAlternateKeyMask) == NSAlternateKeyMask);
-	[self.delegate prItemSelected:self alternativeSelect:isAlternative];
+	if(dragging)
+	{
+		dragging = NO;
+	}
+	else
+	{
+		BOOL isAlternative = ((theEvent.modifierFlags & NSAlternateKeyMask) == NSAlternateKeyMask);
+		[self.delegate prItemSelected:self alternativeSelect:isAlternative];
+	}
 }
 
 - (void)updateTrackingAreas
 {
 	if(trackingArea) [self removeTrackingArea:trackingArea];
-	trackingArea = [ [NSTrackingArea alloc] initWithRect:[self bounds]
-												 options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow
-												   owner:self
-												userInfo:nil];
+	trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds
+												options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow
+												  owner:self
+											   userInfo:nil];
 	[self addTrackingArea:trackingArea];
 
 	NSPoint mouseLocation = [[self window] mouseLocationOutsideOfEventStream];
@@ -251,6 +260,57 @@ static CGColorRef _highlightColor;
 		[self mouseEntered: nil];
 	else
 		if(!_focused) [self mouseExited: nil];
+}
+
+/////////////// dragging url off this item
+
+- (NSDragOperation)draggingSourceOperationMaskForLocal:(BOOL)flag
+{
+	return NSDragOperationCopy;
+}
+
+- (BOOL)ignoreModifierKeysWhileDragging { return YES; }
+
+- (void)mouseDragged:(NSEvent *)theEvent
+{
+	dragging = YES;
+
+    NSPasteboard *pboard = [NSPasteboard pasteboardWithName:NSDragPboard];
+    [pboard declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:self];
+
+	PullRequest *r = [PullRequest itemOfType:@"PullRequest" serverId:self.userInfo moc:[AppDelegate shared].dataManager.managedObjectContext];
+    [pboard setString:r.webUrl forType:NSStringPboardType];
+
+	NSPoint globalLocation = [ NSEvent mouseLocation ];
+	NSPoint windowLocation = [ [ self window ] convertScreenToBase: globalLocation ];
+	NSPoint viewLocation = [ self convertPoint: windowLocation fromView: nil ];
+	viewLocation = NSMakePoint(viewLocation.x-28, viewLocation.y-4);
+
+	NSImage *dragIcon = [self scaleImage:[NSApp applicationIconImage]
+							  toFillSize:CGSizeMake(32, 32)];
+
+    [self dragImage:dragIcon
+				 at:viewLocation
+			 offset:CGSizeZero
+			  event:theEvent
+		 pasteboard:pboard
+			 source:self
+		  slideBack:YES];
+}
+
+- (NSImage *)scaleImage:(NSImage *)image toFillSize:(CGSize)toSize
+{
+    NSRect targetFrame = NSMakeRect(0, 0, toSize.width, toSize.height);
+    NSImageRep *sourceImageRep = [image bestRepresentationForRect:targetFrame
+														  context:nil
+															hints:nil];
+
+    NSImage *targetImage = [[NSImage alloc] initWithSize:toSize];
+    [targetImage lockFocus];
+    [sourceImageRep drawInRect: targetFrame];
+    [targetImage unlockFocus];
+
+	return targetImage;
 }
 
 @end

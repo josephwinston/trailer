@@ -13,14 +13,11 @@
 	if(self)
 	{
 		self.imageAlignment = NSImageAlignCenter;
-		self.imageScaling = NSImageScaleNone;
-
-        if(![[AppDelegate shared].api haveCachedImage:urlPath
-                                              forSize:CGSizeMake(frameRect.size.width, frameRect.size.height)
-                                   tryLoadAndCallback:^(id image) {
-                                       self.image = image;
-                                       [self done];
-                                   }])
+        if(![[AppDelegate shared].api haveCachedAvatar:urlPath
+									tryLoadAndCallback:^(id image) {
+										self.image = image;
+										[self done];
+									}])
         {
             [self startSpinner];
         }

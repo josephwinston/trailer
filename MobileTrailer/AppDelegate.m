@@ -4,8 +4,6 @@
 static AppDelegate *_static_shared_ref;
 + (AppDelegate *)shared { return _static_shared_ref; }
 
-CGFloat GLOBAL_SCREEN_SCALE;
-
 - (void)applicationDidReceiveMemoryWarning:(UIApplication *)application
 {
 	DLog(@"Memory warning");
@@ -16,13 +14,13 @@ CGFloat GLOBAL_SCREEN_SCALE;
 {
 	_static_shared_ref = self;
 
+	self.currentAppVersion = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"];
+
 	self.enteringForeground = YES;
 
 	// Useful snippet for resetting prefs when testing
 	//NSString *appDomain = [[NSBundle mainBundle] bundleIdentifier];
 	//[[NSUserDefaults standardUserDefaults] removePersistentDomainForName:appDomain];
-
-	GLOBAL_SCREEN_SCALE = [UIScreen mainScreen].scale;
 
 	self.dataManager = [[DataManager alloc] init];
 	self.api = [[API alloc] init];
@@ -50,7 +48,7 @@ CGFloat GLOBAL_SCREEN_SCALE;
 	double delayInSeconds = 0.1;
 	dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
 	dispatch_after(popTime, dispatch_get_main_queue(), ^(void){
-		if([Repo countActiveReposInMoc:self.dataManager.managedObjectContext]==0 || [Settings shared].authToken.length==0)
+		if([Repo visibleReposInMoc:self.dataManager.managedObjectContext]==0 || [Settings shared].authToken.length==0)
 		{
 			[self forcePreferences];
 		}

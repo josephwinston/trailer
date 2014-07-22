@@ -18,17 +18,11 @@ static AppDelegate *_static_shared_ref;
 	//NSString *appDomain = [[NSBundle mainBundle] bundleIdentifier];
 	//[[NSUserDefaults standardUserDefaults] removePersistentDomainForName:appDomain];
 
+	self.currentAppVersion = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"];
+
 	self.mainMenu.backgroundColor = [COLOR_CLASS whiteColor];
 
 	self.filterTimer = [[HTPopTimer alloc] initWithTimeInterval:0.2 target:self selector:@selector(filterTimerPopped)];
-
-	SUUpdater *s = [SUUpdater sharedUpdater];
-	if(!s.updateInProgress)
-	{
-		[s checkForUpdatesInBackground];
-	}
-	[s setUpdateCheckInterval:28800.0]; // 8 hours
-	s.automaticallyChecksForUpdates = YES;
 
 	[NSThread setThreadPriority:0.0];
 
@@ -40,8 +34,19 @@ static AppDelegate *_static_shared_ref;
 	[self setupSortMethodMenu];
 
 	// ONLY FOR DEBUG!
-	//NSArray *allRepos = [PullRequest allItemsOfType:@"Repo" inMoc:self.dataManager.managedObjectContext];
-    //[self.dataManager.managedObjectContext deleteObject:[allRepos objectAtIndex:0]];
+	/*
+	NSArray *allPRs = [PullRequest allItemsOfType:@"PullRequest" inMoc:self.dataManager.managedObjectContext];
+	PullRequest *firstPr = allPRs[2];
+	firstPr.updatedAt = [NSDate distantPast];
+
+	Repo *r = [Repo itemOfType:@"Repo" serverId:firstPr.repoId moc:self.dataManager.managedObjectContext];
+	r.updatedAt = [NSDate distantPast];
+
+	NSString *prUrl = firstPr.url;
+	NSArray *allCommentsForFirstPr = [PRComment commentsForPullRequestUrl:prUrl inMoc:self.dataManager.managedObjectContext];
+    [self.dataManager.managedObjectContext deleteObject:[allCommentsForFirstPr objectAtIndex:0]];
+	 */
+	// ONLY FOR DEBUG!
 
 	[self.dataManager postProcessAllPrs];
 
@@ -56,8 +61,7 @@ static AppDelegate *_static_shared_ref;
 
 	[[NSUserNotificationCenter defaultUserNotificationCenter] setDelegate:self];
 
-	NSString *currentAppVersion = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"];
-	currentAppVersion = [@"Version " stringByAppendingString:currentAppVersion];
+	NSString *currentAppVersion = [@"Version " stringByAppendingString:self.currentAppVersion];
 	[self.versionNumber setStringValue:currentAppVersion];
 	[self.aboutVersion setStringValue:currentAppVersion];
 
@@ -87,6 +91,13 @@ static AppDelegate *_static_shared_ref;
 											   object:nil];
 
 	[self addHotKeySupport];
+
+	SUUpdater *s = [SUUpdater sharedUpdater];
+    [self setUpdateCheckParameters];
+	if(!s.updateInProgress && [Settings shared].checkForUpdatesAutomatically)
+	{
+		[s checkForUpdatesInBackground];
+	}
 }
 
 - (void)setupSortMethodMenu
@@ -94,7 +105,7 @@ static AppDelegate *_static_shared_ref;
 	NSMenu *m = [[NSMenu alloc] initWithTitle:@"Sorting"];
 	if([Settings shared].sortDescending)
 	{
-		[m addItemWithTitle:@"Newest First" action:@selector(sortMethodChanged:) keyEquivalent:@""];
+		[m addItemWithTitle:@"Youngest First" action:@selector(sortMethodChanged:) keyEquivalent:@""];
 		[m addItemWithTitle:@"Most Recently Active" action:@selector(sortMethodChanged:) keyEquivalent:@""];
 		[m addItemWithTitle:@"Reverse Alphabetically" action:@selector(sortMethodChanged:) keyEquivalent:@""];
 	}
@@ -106,11 +117,6 @@ static AppDelegate *_static_shared_ref;
 	}
 	self.sortModeSelect.menu = m;
 	[self.sortModeSelect selectItemAtIndex:[Settings shared].sortMethod];
-}
-
-- (IBAction)repoSubscriptionPolicySelected:(NSPopUpButton *)sender
-{
-	[Settings shared].repoSubscriptionPolicy = sender.indexOfSelectedItem;
 }
 
 - (IBAction)dontConfirmRemoveAllMergedSelected:(NSButton *)sender
@@ -213,6 +219,16 @@ static AppDelegate *_static_shared_ref;
 	[self updateMenu];
 }
 
+- (IBAction)hideNewRespositoriesSelected:(NSButton *)sender
+{
+	[Settings shared].hideNewRepositories = (sender.integerValue==1);
+}
+
+- (IBAction)openPrAtFirstUnreadCommentSelected:(NSButton *)sender
+{
+	[Settings shared].openPrAtFirstUnreadComment = (sender.integerValue==1);
+}
+
 - (IBAction)sortMethodChanged:(id)sender
 {
 	[Settings shared].sortMethod = self.sortModeSelect.indexOfSelectedItem;
@@ -225,6 +241,44 @@ static AppDelegate *_static_shared_ref;
 	BOOL show = (sender.integerValue==1);
 	[Settings shared].showStatusItems = show;
 	[self updateMenu];
+
+	[self updateStatusItemsOptions];
+
+	self.api.successfulRefreshesSinceLastStatusCheck = 0;
+	self.preferencesDirty = YES;
+}
+
+- (void)updateStatusItemsOptions
+{
+	BOOL enable = [Settings shared].showStatusItems;
+	[self.makeStatusItemsSelectable setEnabled:enable];
+	[self.statusTermMenu setEnabled:enable];
+	[self.statusTermsField setEnabled:enable];
+	[self.statusItemRefreshCounter setEnabled:enable];
+
+	if(enable)
+	{
+		[self.statusItemRescanLabel setAlphaValue:1.0];
+		[self.statusItemsRefreshNote setAlphaValue:1.0];
+	}
+	else
+	{
+		[self.statusItemRescanLabel setAlphaValue:0.5];
+		[self.statusItemsRefreshNote setAlphaValue:0.5];
+	}
+
+	self.statusItemRefreshCounter.integerValue = [Settings shared].statusItemRefreshInterval;
+	NSInteger count = [Settings shared].statusItemRefreshInterval;
+	if(count>1)
+		self.statusItemRescanLabel.stringValue = [NSString stringWithFormat:@"...and re-scan once every %ld refreshes",(long)count];
+	else
+		self.statusItemRescanLabel.stringValue = [NSString stringWithFormat:@"...and re-scan on every refresh"];
+}
+
+- (IBAction)statusItemRefreshCountChanged:(NSStepper *)sender
+{
+	[Settings shared].statusItemRefreshInterval = self.statusItemRefreshCounter.integerValue;
+	[self updateStatusItemsOptions];
 }
 
 - (IBAction)makeStatusItemsSelectableSelected:(NSButton *)sender
@@ -255,6 +309,39 @@ static AppDelegate *_static_shared_ref;
 	[Settings shared].moveAssignedPrsToMySection = setting;
 	[self.dataManager postProcessAllPrs]; // apply any view option changes
 	[self updateMenu];
+}
+
+- (IBAction)checkForUpdatesAutomaticallySelected:(NSButton *)sender
+{
+	BOOL setting = (sender.integerValue==1);
+    [Settings shared].checkForUpdatesAutomatically = setting;
+    [self refreshUpdatePreferences];
+}
+
+- (void)refreshUpdatePreferences
+{
+    BOOL setting = [Settings shared].checkForUpdatesAutomatically;
+    NSInteger interval = [Settings shared].checkForUpdatesInterval;
+
+    [self.checkForUpdatesLabel setHidden:!setting];
+    [self.checkForUpdatesSelector setHidden:!setting];
+
+    [self.checkForUpdatesSelector setIntegerValue:interval];
+    [self.checkForUpdatesAutomatically setIntegerValue:setting];
+    if(interval<2)
+    {
+        self.checkForUpdatesLabel.stringValue = [NSString stringWithFormat:@"Check every hour"];
+    }
+    else
+    {
+        self.checkForUpdatesLabel.stringValue = [NSString stringWithFormat:@"Check every %ld hours",(long)interval];
+    }
+}
+
+- (IBAction)checkForUpdatesIntervalChanged:(NSStepper *)sender
+{
+    [Settings shared].checkForUpdatesInterval = sender.integerValue;
+    [self refreshUpdatePreferences];
 }
 
 - (IBAction)launchAtStartSelected:(NSButton *)sender
@@ -383,7 +470,21 @@ static AppDelegate *_static_shared_ref;
 		}
 	}
 
-    [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:notification];
+	if((type==kNewComment || type==kNewMention) &&
+	   ![Settings shared].hideAvatars &&
+	   [notification respondsToSelector:@selector(setContentImage:)]) // let's add an avatar on this!
+	{
+		PRComment *c = (PRComment *)item;
+		[self.api haveCachedAvatar:c.avatarUrl
+				tryLoadAndCallback:^(NSImage *image) {
+					notification.contentImage = image;
+					[[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:notification];
+				}];
+	}
+	else // proceed as normal
+	{
+		[[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:notification];
+	}
 }
 
 - (void)prItemSelected:(PRItemView *)item alternativeSelect:(BOOL)isAlternative
@@ -391,9 +492,8 @@ static AppDelegate *_static_shared_ref;
 	self.ignoreNextFocusLoss = isAlternative;
 
 	PullRequest *r = [PullRequest itemOfType:@"PullRequest" serverId:item.userInfo moc:self.dataManager.managedObjectContext];
+	[[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:r.urlForOpening]];
 	[r catchUpWithComments];
-
-	[[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:r.webUrl]];
 
 	NSInteger reSelectIndex = -1;
 	if(isAlternative)
@@ -426,7 +526,7 @@ static AppDelegate *_static_shared_ref;
 
 - (void)menuWillOpen:(NSMenu *)menu
 {
-    if([[menu title] isEqualToString:@"Options"])
+	if([[menu title] isEqualToString:@"Options"])
 	{
 		if(!self.isRefreshing)
 		{
@@ -439,7 +539,7 @@ static AppDelegate *_static_shared_ref;
 
 			self.refreshNow.title = [prefix stringByAppendingFormat:@" - %@",[self.api lastUpdateDescription]];
 		}
-    }
+	}
 }
 
 - (void)sizeMenuAndShow:(BOOL)show
@@ -592,7 +692,7 @@ static AppDelegate *_static_shared_ref;
 								@kPullRequestSectionMerged: [NSMutableArray arrayWithObject:mergedHeader],
 								@kPullRequestSectionClosed: [NSMutableArray arrayWithObject:closedHeader],
 								@kPullRequestSectionAll: [NSMutableArray arrayWithObject:allHeader],
-							   };
+								};
 
 	for(PullRequest *r in pullRequests)
 	{
@@ -644,10 +744,12 @@ static AppDelegate *_static_shared_ref;
 
 - (void)defaultsUpdated
 {
+	NSTableColumn *repositoryColumn = [self.projectsTable tableColumns][1];
+
 	if([Settings shared].localUser)
-		self.githubDetailsBox.title = [NSString stringWithFormat:@"Repositories for %@",[Settings shared].localUser];
+		[[repositoryColumn headerCell] setStringValue:[NSString stringWithFormat:@" Watched repositories for %@",[Settings shared].localUser]];
 	else
-		self.githubDetailsBox.title = @"Your Repositories";
+		[[repositoryColumn headerCell] setStringValue:@" Your watched repositories"];
 }
 
 - (void)startRateLimitHandling
@@ -742,6 +844,7 @@ static AppDelegate *_static_shared_ref;
 - (void)reset
 {
 	self.preferencesDirty = YES;
+	self.api.successfulRefreshesSinceLastStatusCheck = 0;
 	self.lastSuccessfulRefresh = nil;
 	[self.dataManager deleteEverything];
 	[self.projectsTable reloadData];
@@ -769,7 +872,6 @@ static AppDelegate *_static_shared_ref;
 	[self.sortModeSelect selectItemAtIndex:[Settings shared].sortMethod];
 	[self.prMergedPolicy selectItemAtIndex:[Settings shared].mergeHandlingPolicy];
 	[self.prClosedPolicy selectItemAtIndex:[Settings shared].closeHandlingPolicy];
-	[self.repoSubscriptionPolicy selectItemAtIndex:[Settings shared].repoSubscriptionPolicy];
 
 	self.launchAtStartup.integerValue = [self isAppLoginItem];
 	self.hideAllPrsSection.integerValue = [Settings shared].hideAllPrsSection;
@@ -791,6 +893,8 @@ static AppDelegate *_static_shared_ref;
 	self.makeStatusItemsSelectable.integerValue = [Settings shared].makeStatusItemsSelectable;
 	self.markUnmergeableOnUserSectionsOnly.integerValue = [Settings shared].markUnmergeableOnUserSectionsOnly;
 	self.countOnlyListedPrs.integerValue = [Settings shared].countOnlyListedPrs;
+	self.hideNewRepositories.integerValue = [Settings shared].hideNewRepositories;
+	self.openPrAtFirstUnreadComment.integerValue = [Settings shared].openPrAtFirstUnreadComment;
 
 	self.hotkeyEnable.integerValue = [Settings shared].hotkeyEnable;
 	self.hotkeyControlModifier.integerValue = [Settings shared].hotkeyControlModifier;
@@ -800,6 +904,10 @@ static AppDelegate *_static_shared_ref;
 	[self enableHotkeySegments];
 	[self populateHotkeyLetterMenu];
 
+    [self refreshUpdatePreferences];
+
+	[self updateStatusItemsOptions];
+
 	[self.hotkeyEnable setEnabled:(AXIsProcessTrustedWithOptions != NULL)];
 
 	[self.repoCheckStepper setFloatValue:[Settings shared].newRepoCheckPeriod];
@@ -807,7 +915,7 @@ static AppDelegate *_static_shared_ref;
 
 	[self.refreshDurationStepper setFloatValue:[Settings shared].refreshPeriod];
 	[self refreshDurationChanged:nil];
-	
+
 	[self.preferencesWindow setLevel:NSFloatingWindowLevel];
 	[self.preferencesWindow makeKeyAndOrderFront:self];
 }
@@ -859,6 +967,20 @@ static AppDelegate *_static_shared_ref;
 	[self.hotkeyLetter selectItemWithTitle:[Settings shared].hotkeyLetter];
 }
 
+- (IBAction)showAllRepositoriesSelected:(NSButton *)sender
+{
+	for(Repo *r in [self getFilteredRepos]) { r.hidden = @NO; r.dirty = @YES; }
+	self.preferencesDirty = YES;
+	[self.projectsTable reloadData];
+}
+
+- (IBAction)hideAllRepositoriesSelected:(NSButton *)sender
+{
+	for(Repo *r in [self getFilteredRepos]) { r.hidden = @YES; r.dirty = @NO; }
+	self.preferencesDirty = YES;
+	[self.projectsTable reloadData];
+}
+
 - (IBAction)enableHotkeySelected:(NSButton *)sender
 {
 	[Settings shared].hotkeyEnable = self.hotkeyEnable.integerValue;
@@ -880,6 +1002,12 @@ static AppDelegate *_static_shared_ref;
 - (IBAction)viewExistingTokensSelected:(NSButton *)sender
 {
 	NSString *address = [NSString stringWithFormat:@"https://%@/settings/applications",[Settings shared].apiFrontEnd];
+	[[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:address]];
+}
+
+- (IBAction)viewWatchlistSelected:(NSButton *)sender
+{
+	NSString *address = [NSString stringWithFormat:@"https://%@/watching",[Settings shared].apiFrontEnd];
 	[[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:address]];
 }
 
@@ -932,40 +1060,44 @@ static AppDelegate *_static_shared_ref;
 - (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row
 {
 	NSButtonCell *cell = [tableColumn dataCellForRow:row];
-	if([self tableView:tableView isGroupRow:row])
+	if([tableColumn.identifier isEqualToString:@"hide"])
 	{
-		[cell setAlignment:NSCenterTextAlignment];
-		[cell setImagePosition:NSNoImage];
-
-		if(row==0)
+		if([self tableView:tableView isGroupRow:row])
 		{
-			cell.title = @"Parent Repositories";
+			[cell setImagePosition:NSNoImage];
+			cell.state = NSMixedState;
+			[cell setEnabled:NO];
 		}
 		else
 		{
-			cell.title = @"Forked Repositories";
-		}
+			[cell setImagePosition:NSImageOnly];
 
-		cell.state = NSMixedState;
-		[cell setEnabled:NO];
+			Repo *r = [self repoForRow:row];
+			if(r.hidden.boolValue)
+				cell.state = NSOnState;
+			else
+				cell.state = NSOffState;
+			[cell setEnabled:YES];
+		}
 	}
 	else
 	{
-		[cell setAlignment:NSLeftTextAlignment];
-		[cell setImagePosition:NSImageLeft];
-
-		Repo *r = [self repoForRow:row];
-
-		cell.title = r.fullName;
-		if(r.active.boolValue)
+		if([self tableView:tableView isGroupRow:row])
 		{
-			cell.state = NSOnState;
+			if(row==0)
+				cell.title = @"Parent Repositories";
+			else
+				cell.title = @"Forked Repositories";
+
+			cell.state = NSMixedState;
+			[cell setEnabled:NO];
 		}
 		else
 		{
-			cell.state = NSOffState;
+			Repo *r = [self repoForRow:row];
+			cell.title = r.fullName;
+			[cell setEnabled:YES];
 		}
-		[cell setEnabled:YES];
 	}
 	return cell;
 }
@@ -985,7 +1117,9 @@ static AppDelegate *_static_shared_ref;
 	if(![self tableView:tableView isGroupRow:row])
 	{
 		Repo *r = [self repoForRow:row];
-		r.active = @([object boolValue]);
+		BOOL hideNow = [object boolValue];
+		r.hidden = @(hideNow);
+		r.dirty = @(!hideNow);
 	}
 	[self.dataManager saveDB];
 	self.preferencesDirty = YES;
@@ -1054,27 +1188,46 @@ static AppDelegate *_static_shared_ref;
 				[self startRefreshIfItIsDue];
 			}
 		}
+        [self setUpdateCheckParameters];
 	}
 	else if([notification object]==self.apiSettings)
 	{
-		[self copyApiInfo];
+		[self commitApiInfo];
 	}
 }
 
-- (void)copyApiInfo
+- (void)setUpdateCheckParameters
+{
+    SUUpdater *s = [SUUpdater sharedUpdater];
+    BOOL autoCheck = [Settings shared].checkForUpdatesAutomatically;
+	s.automaticallyChecksForUpdates = autoCheck;
+    if(autoCheck)
+    {
+        [s setUpdateCheckInterval:3600.0*[Settings shared].checkForUpdatesInterval];
+    }
+    DLog(@"Check for updates set to %d every %f seconds",s.automaticallyChecksForUpdates,s.updateCheckInterval);
+}
+
+- (void)commitApiInfo
 {
 	NSString *frontEnd = [self.apiFrontEnd stringValue];
 	NSString *backEnd = [self.apiBackEnd stringValue];
 	NSString *path = [self.apiPath stringValue];
-	frontEnd = [frontEnd stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-	backEnd = [backEnd stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-	path = [path stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+	NSCharacterSet *cs = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+	frontEnd = [frontEnd stringByTrimmingCharactersInSet:cs];
+	backEnd = [backEnd stringByTrimmingCharactersInSet:cs];
+	path = [path stringByTrimmingCharactersInSet:cs];
+
 	if(frontEnd.length==0) frontEnd = nil;
 	if(backEnd.length==0) backEnd = nil;
 	if(path.length==0) path = nil;
+
 	[Settings shared].apiFrontEnd = frontEnd;
 	[Settings shared].apiBackEnd = backEnd;
 	[Settings shared].apiPath = path;
+
+	[AppDelegate shared].preferencesDirty = YES;
 }
 
 - (void)networkStateChanged
@@ -1114,7 +1267,7 @@ static AppDelegate *_static_shared_ref;
 
 - (IBAction)refreshNowSelected:(NSMenuItem *)sender
 {
-	if([Repo countActiveReposInMoc:self.dataManager.managedObjectContext]==0)
+	if([Repo countVisibleReposInMoc:self.dataManager.managedObjectContext]==0)
 	{
 		[self preferencesSelected:nil];
 		return;
@@ -1153,9 +1306,6 @@ static AppDelegate *_static_shared_ref;
 
 	[self.refreshButton setEnabled:NO];
 	[self.projectsTable setEnabled:NO];
-	[self.selectAll setEnabled:NO];
-	[self.selectParents setEnabled:NO];
-	[self.clearAll setEnabled:NO];
 	[self.githubTokenHolder setEnabled:NO];
 	[self.activityDisplay startAnimation:nil];
 	self.statusItemView.grayOut = YES;
@@ -1182,10 +1332,7 @@ static AppDelegate *_static_shared_ref;
 	self.isRefreshing = NO;
 	[self.refreshButton setEnabled:YES];
 	[self.projectsTable setEnabled:YES];
-	[self.selectAll setEnabled:YES];
-	[self.selectParents setEnabled:YES];
 	[self.githubTokenHolder setEnabled:YES];
-	[self.clearAll setEnabled:YES];
 	[self.activityDisplay stopAnimation:nil];
 	[self.dataManager saveDB];
 	[self.projectsTable reloadData];
@@ -1298,9 +1445,9 @@ static AppDelegate *_static_shared_ref;
 	if(!self.statusItem) self.statusItem = [statusBar statusItemWithLength:NSVariableStatusItemLength];
 
 	self.statusItemView = [[StatusItemView alloc] initWithFrame:CGRectMake(0, 0, length, H)
-													  label:countString
-												 attributes:attributes
-												   delegate:self];
+														  label:countString
+													 attributes:attributes
+													   delegate:self];
 	self.statusItemView.highlighted = [self.mainMenu isVisible];
 	self.statusItemView.grayOut = self.isRefreshing;
 	self.statusItem.view = self.statusItemView;
@@ -1308,93 +1455,47 @@ static AppDelegate *_static_shared_ref;
 	[self sizeMenuAndShow:NO];
 }
 
-- (IBAction)selectParentsSelected:(NSButton *)sender
-{
-	NSArray *allRepos = [self getFilteredRepos];
-
-	for(Repo *r in allRepos)
-		if(!r.fork.boolValue)
-			r.active = @YES;
-
-	[self.dataManager saveDB];
-	[self.projectsTable reloadData];
-	self.preferencesDirty = YES;
-}
-
-- (IBAction)selectAllSelected:(NSButton *)sender
-{
-	NSArray *allRepos = [self getFilteredRepos];
-
-	for(Repo *r in allRepos)
-		r.active = @YES;
-
-	[self.dataManager saveDB];
-	[self.projectsTable reloadData];
-	self.preferencesDirty = YES;
-}
-
-- (IBAction)clearallSelected:(NSButton *)sender
-{
-	NSArray *allRepos = [self getFilteredRepos];
-
-	for(Repo *r in allRepos)
-		r.active = @NO;
-
-	[self.dataManager saveDB];
-	[self.projectsTable reloadData];
-	self.preferencesDirty = YES;
-}
-
 //////////////// launch at startup from: http://cocoatutorial.grapewave.com/tag/lssharedfilelistitemresolve/
 
 - (void) addAppAsLoginItem
 {
-	NSString * appPath = [[NSBundle mainBundle] bundlePath];
-
-	// This will retrieve the path for the application
-	// For example, /Applications/test.app
-	CFURLRef url = (__bridge CFURLRef)[NSURL fileURLWithPath:appPath];
-
 	// Create a reference to the shared file list.
 	// We are adding it to the current user only.
 	// If we want to add it all users, use
-	// kLSSharedFileListGlobalLoginItems instead of
-	//kLSSharedFileListSessionLoginItems
+	// kLSSharedFileListGlobalLoginItems instead of kLSSharedFileListSessionLoginItems
 	LSSharedFileListRef loginItems = LSSharedFileListCreate(NULL, kLSSharedFileListSessionLoginItems, NULL);
-	if (loginItems) {
-		//Insert an item to the list.
+	if(loginItems)
+	{
+		NSString * appPath = [[NSBundle mainBundle] bundlePath];
+		CFURLRef url = (__bridge CFURLRef)[NSURL fileURLWithPath:appPath];
 		LSSharedFileListItemRef item = LSSharedFileListInsertItemURL(loginItems,
 																	 kLSSharedFileListItemLast, NULL, NULL,
 																	 url, NULL, NULL);
-		if (item){
-			CFRelease(item);
-		}
+		if (item) CFRelease(item);
 		CFRelease(loginItems);
 	}
 }
 
 - (BOOL)isAppLoginItem
 {
-	NSString * appPath = [[NSBundle mainBundle] bundlePath];
-
-	// This will retrieve the path for the application
-	// For example, /Applications/test.app
-	CFURLRef url = (__bridge CFURLRef)[NSURL fileURLWithPath:appPath];
-
-	// Create a reference to the shared file list.
 	LSSharedFileListRef loginItems = LSSharedFileListCreate(NULL, kLSSharedFileListSessionLoginItems, NULL);
-
-	if (loginItems) {
+	if(loginItems)
+	{
 		UInt32 seedValue;
-		//Retrieve the list of Login Items and cast them to
-		// a NSArray so that it will be easier to iterate.
 		NSArray  *loginItemsArray = (__bridge_transfer NSArray *)LSSharedFileListCopySnapshot(loginItems, &seedValue);
-		for(int i = 0 ; i< [loginItemsArray count]; i++){
-			LSSharedFileListItemRef itemRef = (__bridge LSSharedFileListItemRef)[loginItemsArray objectAtIndex:i];
-			//Resolve the item with URL
-			if (LSSharedFileListItemResolve(itemRef, 0, (CFURLRef*) &url, NULL) == noErr) {
-				NSURL *uu = (__bridge NSURL*)url;
-				if ([[uu path] compare:appPath] == NSOrderedSame){
+		CFRelease(loginItems);
+
+		for(int i = 0 ; i< loginItemsArray.count; i++)
+		{
+			LSSharedFileListItemRef itemRef = (__bridge LSSharedFileListItemRef)loginItemsArray[i];
+
+			NSString * appPath = [[NSBundle mainBundle] bundlePath];
+			CFURLRef url = (__bridge CFURLRef)[NSURL fileURLWithPath:appPath];
+			if(LSSharedFileListItemResolve(itemRef, 0, &url, NULL) == noErr)
+			{
+				NSURL *uu = (__bridge_transfer NSURL*)url;
+				if ([[uu path] compare:appPath] == NSOrderedSame)
+				{
 					return YES;
 				}
 			}
@@ -1405,26 +1506,25 @@ static AppDelegate *_static_shared_ref;
 
 - (void) deleteAppFromLoginItem
 {
-	NSString * appPath = [[NSBundle mainBundle] bundlePath];
-
-	// This will retrieve the path for the application
-	// For example, /Applications/test.app
-	CFURLRef url = (__bridge CFURLRef)[NSURL fileURLWithPath:appPath];
-
-	// Create a reference to the shared file list.
 	LSSharedFileListRef loginItems = LSSharedFileListCreate(NULL, kLSSharedFileListSessionLoginItems, NULL);
-
-	if (loginItems) {
+	if(loginItems)
+	{
 		UInt32 seedValue;
-		//Retrieve the list of Login Items and cast them to
-		// a NSArray so that it will be easier to iterate.
 		NSArray  *loginItemsArray = (__bridge_transfer NSArray *)LSSharedFileListCopySnapshot(loginItems, &seedValue);
-		for(int i = 0 ; i< [loginItemsArray count]; i++){
+		CFRelease(loginItems);
+
+		for(int i = 0 ; i< [loginItemsArray count]; i++)
+		{
 			LSSharedFileListItemRef itemRef = (__bridge LSSharedFileListItemRef)[loginItemsArray objectAtIndex:i];
-			//Resolve the item with URL
-			if (LSSharedFileListItemResolve(itemRef, 0, (CFURLRef*) &url, NULL) == noErr) {
-				NSURL *uu = (__bridge NSURL*)url;
-				if ([[uu path] compare:appPath] == NSOrderedSame){
+
+			NSString * appPath = [[NSBundle mainBundle] bundlePath];
+			CFURLRef url = (__bridge CFURLRef)[NSURL fileURLWithPath:appPath];
+
+			if (LSSharedFileListItemResolve(itemRef, 0, (CFURLRef*) &url, NULL) == noErr)
+			{
+				NSURL *uu = (__bridge_transfer NSURL*)url;
+				if ([[uu path] compare:appPath] == NSOrderedSame)
+				{
 					LSSharedFileListItemRemove(loginItems,itemRef);
 				}
 			}
@@ -1468,7 +1568,7 @@ static AppDelegate *_static_shared_ref;
 
 - (IBAction)testApiServerSelected:(NSButton *)sender
 {
-	[self copyApiInfo];
+	[self commitApiInfo];
 	[sender setEnabled:NO];
 
 	[self.api testApiAndCallback:^(NSError *error) {
@@ -1509,7 +1609,8 @@ static AppDelegate *_static_shared_ref;
 		{
 			if(!globalKeyMonitor)
 			{
-				NSDictionary *options = @{ (__bridge id)kAXTrustedCheckOptionPrompt: @YES};
+				BOOL alreadyTrusted = AXIsProcessTrusted();
+				NSDictionary *options = @{ (__bridge id)kAXTrustedCheckOptionPrompt: @(!alreadyTrusted)};
 				if(AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options))
 				{
 					globalKeyMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSKeyDownMask handler:^void(NSEvent* incomingEvent) {
@@ -1536,15 +1637,6 @@ static AppDelegate *_static_shared_ref;
 
 		switch(incomingEvent.keyCode)
 		{
-			case 43: // prefs
-			{
-				if((incomingEvent.modifierFlags & NSCommandKeyMask) == NSCommandKeyMask)
-				{
-					[self preferencesSelected:nil];
-					return nil;
-				}
-				break;
-			}
 			case 125: // down
 			{
 				PRItemView *v = [self focusedItemView];
@@ -1586,6 +1678,17 @@ static AppDelegate *_static_shared_ref;
 
 		return incomingEvent;
 	}];
+}
+
+- (NSString *)focusedItemUrl
+{
+	PRItemView *v = [self focusedItemView];
+	v.focused = NO;
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+		v.focused = YES;
+	});
+	PullRequest *r = [PullRequest itemOfType:@"PullRequest" serverId:v.userInfo moc:self.dataManager.managedObjectContext];
+	return r.webUrl;
 }
 
 - (void)prItemFocused:(NSNotification *)focusedNotification

@@ -43,30 +43,32 @@ static NSDateFormatter *itemDateFormatter;
 + (PullRequest *)pullRequestWithInfo:(NSDictionary *)info moc:(NSManagedObjectContext *)moc
 {
 	PullRequest *p = [DataItem itemWithInfo:info type:@"PullRequest" moc:moc];
+	if(p.postSyncAction.integerValue != kPostSyncDoNothing)
+	{
+		p.url = [info ofk:@"url"];
+		p.webUrl = [info ofk:@"html_url"];
+		p.number = [info ofk:@"number"];
+		p.state = [info ofk:@"state"];
+		p.title = [info ofk:@"title"];
+		p.body = [info ofk:@"body"];
 
-	p.url = [info ofk:@"url"];
-	p.webUrl = [info ofk:@"html_url"];
-	p.number = [info ofk:@"number"];
-	p.state = [info ofk:@"state"];
-	p.title = [info ofk:@"title"];
-	p.body = [info ofk:@"body"];
+		NSNumber *m = [info ofk:@"mergeable"];
+		if(!m) m = @YES;
+		p.mergeable = m;
 
-	NSNumber *m = [info ofk:@"mergeable"];
-	if(!m) m = @YES;
-	p.mergeable = m;
+		NSDictionary *userInfo = [info ofk:@"user"];
+		p.userId = [userInfo ofk:@"id"];
+		p.userLogin = [userInfo ofk:@"login"];
+		p.userAvatarUrl = [userInfo ofk:@"avatar_url"];
 
-	NSDictionary *userInfo = [info ofk:@"user"];
-	p.userId = [userInfo ofk:@"id"];
-	p.userLogin = [userInfo ofk:@"login"];
-	p.userAvatarUrl = [userInfo ofk:@"avatar_url"];
+		p.repoId = [[[info ofk:@"base"] ofk:@"repo"] ofk:@"id"];
 
-	p.repoId = [[[info ofk:@"base"] ofk:@"repo"] ofk:@"id"];
-
-	NSDictionary *linkInfo = [info ofk:@"_links"];
-	p.issueCommentLink = [[linkInfo ofk:@"comments"] ofk:@"href"];
-	p.reviewCommentLink = [[linkInfo ofk:@"review_comments"] ofk:@"href"];
-	p.statusesLink = [[linkInfo ofk:@"statuses"] ofk:@"href"];
-	p.issueUrl = [[linkInfo ofk:@"issue"] ofk:@"href"];
+		NSDictionary *linkInfo = [info ofk:@"_links"];
+		p.issueCommentLink = [[linkInfo ofk:@"comments"] ofk:@"href"];
+		p.reviewCommentLink = [[linkInfo ofk:@"review_comments"] ofk:@"href"];
+		p.statusesLink = [[linkInfo ofk:@"statuses"] ofk:@"href"];
+		p.issueUrl = [[linkInfo ofk:@"issue"] ofk:@"href"];
+	}
 
 	p.reopened = @(p.condition.integerValue == kPullRequestConditionClosed);
 	p.condition = @kPullRequestConditionOpen;
@@ -86,14 +88,10 @@ static NSDateFormatter *itemDateFormatter;
 	else if([Settings shared].hideAllPrsSection)	section = kPullRequestSectionNone;
 	else											section = kPullRequestSectionAll;
 
-	if(!self.latestReadCommentDate) self.latestReadCommentDate = [NSDate distantPast];
-
 	NSFetchRequest *f = [NSFetchRequest fetchRequestWithEntityName:@"PRComment"];
 	f.returnsObjectsAsFaults = NO;
-	f.predicate = [NSPredicate predicateWithFormat:@"userId != %lld and pullRequestUrl == %@ and createdAt > %@",
-				   [Settings shared].localUserId.longLongValue,
-				   self.url,
-				   self.latestReadCommentDate];
+
+	NSDate *latestDate = self.latestReadCommentDate;
 
 	if(((section == kPullRequestSectionAll) || (section == kPullRequestSectionNone))
 	   && [Settings shared].autoParticipateInMentions)
@@ -101,24 +99,31 @@ static NSDateFormatter *itemDateFormatter;
 		if(self.refersToMe)
 		{
 			section = kPullRequestSectionParticipated;
+			f.predicate = [self predicateForOthersCommentsSinceDate:latestDate];
 			self.unreadComments = @([self.managedObjectContext countForFetchRequest:f error:nil]);
 		}
 		else
 		{
-			NSArray *unreadComments = [self.managedObjectContext executeFetchRequest:f error:nil];
-			self.unreadComments = @(unreadComments.count);
-			for(PRComment *c in unreadComments)
+			f.predicate = [self predicateForOthersCommentsSinceDate:nil];
+			NSUInteger unreadCommentCount = 0;
+			NSArray *allOthersComments = [self.managedObjectContext executeFetchRequest:f error:nil];
+			for(PRComment *c in allOthersComments)
 			{
 				if(c.refersToMe)
 				{
 					section = kPullRequestSectionParticipated;
-					break;
+				}
+				if([c.createdAt compare:latestDate]==NSOrderedDescending)
+				{
+					unreadCommentCount++;
 				}
 			}
+			self.unreadComments = @(unreadCommentCount);
 		}
 	}
 	else
 	{
+		f.predicate = [self predicateForOthersCommentsSinceDate:latestDate];
 		self.unreadComments = @([self.managedObjectContext countForFetchRequest:f error:nil]);
 	}
 
@@ -284,8 +289,14 @@ static NSDateFormatter *itemDateFormatter;
 
 - (void)prepareForDeletion
 {
-	[PRComment removeCommentsWithPullRequestURL:self.url inMoc:self.managedObjectContext];
-	[PRStatus removeStatusesWithPullRequestId:self.serverId inMoc:self.managedObjectContext];
+    NSNumber *sid = self.serverId;
+    if(sid)
+    {
+        NSManagedObjectContext *moc = self.managedObjectContext;
+        [PRComment removeCommentsWithPullRequestURL:self.url inMoc:moc];
+        [PRStatus removeStatusesWithPullRequestId:sid inMoc:moc];
+    }
+	[super prepareForDeletion];
 }
 
 + (PullRequest *)pullRequestWithUrl:(NSString *)url moc:(NSManagedObjectContext *)moc
@@ -295,6 +306,14 @@ static NSDateFormatter *itemDateFormatter;
 	f.fetchLimit = 1;
 	f.predicate = [NSPredicate predicateWithFormat:@"url == %@",url];
 	return [[moc executeFetchRequest:f error:nil] lastObject];
+}
+
++ (NSArray *)pullRequestsForRepoId:(NSNumber *)repoId inMoc:(NSManagedObjectContext *)moc
+{
+	NSFetchRequest *f = [NSFetchRequest fetchRequestWithEntityName:@"PullRequest"];
+	f.returnsObjectsAsFaults = NO;
+	f.predicate = [NSPredicate predicateWithFormat:@"repoId == %@",repoId];
+	return [moc executeFetchRequest:f error:nil];
 }
 
 - (void)catchUpWithComments
@@ -379,6 +398,42 @@ static NSDateFormatter *itemDateFormatter;
 		}
 	}
 	return result;
+}
+
+- (NSString *)urlForOpening
+{
+	if (self.unreadComments.integerValue != 0 && [Settings shared].openPrAtFirstUnreadComment)
+	{
+		NSFetchRequest *f = [NSFetchRequest fetchRequestWithEntityName:@"PRComment"];
+		f.returnsObjectsAsFaults = NO;
+		f.fetchLimit = 1;
+		f.predicate = [self predicateForOthersCommentsSinceDate:self.latestReadCommentDate];
+		f.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"createdAt" ascending:YES]];
+		NSArray *ret = [self.managedObjectContext executeFetchRequest:f error:nil];
+		if (ret.count > 0)
+		{
+			PRComment *comment = (PRComment *)ret[0];
+			return comment.webUrl;
+		}
+	}
+	return self.webUrl;
+}
+
+- (NSPredicate *)predicateForOthersCommentsSinceDate:(NSDate *)date
+{
+	if(date)
+	{
+		return [NSPredicate predicateWithFormat:@"userId != %lld and pullRequestUrl == %@ and createdAt > %@",
+				[Settings shared].localUserId.longLongValue,
+				self.url,
+				date];
+	}
+	else
+	{
+		return [NSPredicate predicateWithFormat:@"userId != %lld and pullRequestUrl == %@",
+				[Settings shared].localUserId.longLongValue,
+				self.url];
+	}
 }
 
 @end

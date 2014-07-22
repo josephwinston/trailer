@@ -3,8 +3,12 @@
 
 #ifdef __OBJC__
 
-//#define DLog(fmt, ...) NSLog(fmt, ##__VA_ARGS__)
-#define DLog(...)
+#ifdef DEBUG
+	#define DLog(fmt, ...) NSLog(fmt, ##__VA_ARGS__)
+#else
+	#define DLog(...)
+#endif
+
 #define COLOR_CLASS UIColor
 #define IMAGE_CLASS UIImage
 #define MAKECOLOR(R,G,B,A) [COLOR_CLASS colorWithRed:R green:G blue:B alpha:A]
@@ -23,14 +27,11 @@
 #import "DataItem.h"
 #import "PRStatus.h"
 #import "PRComment.h"
-#import "Org.h"
 #import "Repo.h"
 #import "PullRequest.h"
 #import "PRCell.h"
 #import "HTPopTimer.h"
 #import "DataManager.h"
-#import "ImageFunctions.h"
-#import "UIImage+Scale.h"
 #import "EmptyView.h"
 #import "PickerViewController.h"
 #import "MasterViewController.h"

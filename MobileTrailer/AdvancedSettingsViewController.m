@@ -35,9 +35,8 @@
 
 #define TOTAL_SECTIONS 8
 
-#define SORT_REVERSE @[@"Newest first",@"Most recently active",@"Reverse alphabetically"]
+#define SORT_REVERSE @[@"Youngest first",@"Most recently active",@"Reverse alphabetically"]
 #define SORT_NORMAL @[@"Oldest first",@"Inactive for longest",@"Alphabetically"]
-#define AUTO_SUBSCRIPTION @[@"None",@"Parents",@"All"]
 #define PR_HANDLING_POLICY @[@"Keep My Own",@"Keep All",@"Don't Keep"]
 
 NSString *B(NSString *input)
@@ -69,7 +68,7 @@ NSString *B(NSString *input)
 			}
 			case 2:
 			{
-				cell.textLabel.text = B(@"Repository refresh\ninterval");
+				cell.textLabel.text = B(@"Watchlist refresh\ninterval");
 				cell.detailTextLabel.text = [NSString stringWithFormat:@"%.0f hours",[Settings shared].newRepoCheckPeriod];
 				break;
 			}
@@ -135,6 +134,11 @@ NSString *B(NSString *input)
 				if([Settings shared].autoParticipateInMentions) cell.accessoryType = UITableViewCellAccessoryCheckmark;
 				break;
 			}
+			case 3:
+			{
+				cell.textLabel.text = B(@"Open PRs at first unread\ncomment");
+				if([Settings shared].openPrAtFirstUnreadComment) cell.accessoryType = UITableViewCellAccessoryCheckmark;
+			}
 		}
 	}
 	else if(indexPath.section==REPOS_SECTION_INDEX)
@@ -154,12 +158,12 @@ NSString *B(NSString *input)
 				if([Settings shared].includeReposInFilter) cell.accessoryType = UITableViewCellAccessoryCheckmark;
 				break;
             }
-            case 2:
-            {
-				cell.textLabel.text = B(@"Auto subscribe to new\nrepositories");
-                cell.detailTextLabel.text = AUTO_SUBSCRIPTION[[Settings shared].repoSubscriptionPolicy];
-                break;
-            }
+			case 2:
+			{
+				cell.textLabel.text = B(@"Hide new repositories\nby default");
+				if([Settings shared].hideNewRepositories) cell.accessoryType = UITableViewCellAccessoryCheckmark;
+				break;
+			}
 		}
 	}
 	else if(indexPath.section==HISTORY_SECTION_INDEX)
@@ -259,7 +263,7 @@ NSString *B(NSString *input)
 			{
 				// seconds
 				NSInteger count=0;
-				for(NSInteger f=30;f<3600;f+=10)
+				for(NSInteger f=60;f<3600;f+=10)
 				{
 					if(f==[Settings shared].refreshPeriod) previousValue = count;
 					[values addObject:[NSString stringWithFormat:@"%ld seconds",(long)f]];
@@ -346,6 +350,10 @@ NSString *B(NSString *input)
 				[Settings shared].autoParticipateInMentions = ![Settings shared].autoParticipateInMentions;
 				break;
 			}
+			case 3:
+			{
+				[Settings shared].openPrAtFirstUnreadComment = ![Settings shared].openPrAtFirstUnreadComment;
+			}
 		}
 		[settingsChangedTimer push];
 	}
@@ -363,15 +371,11 @@ NSString *B(NSString *input)
 				[Settings shared].includeReposInFilter = ![Settings shared].includeReposInFilter;
 				break;
 			}
-            case 2:
-            {
-                selectedIndexPath = indexPath;
-				previousValue = [Settings shared].repoSubscriptionPolicy;
-				pickerName = [self.tableView cellForRowAtIndexPath:indexPath].textLabel.text;
-                valuesToPush = AUTO_SUBSCRIPTION;
-				[self performSegueWithIdentifier:@"showPicker" sender:self];
+			case 2:
+			{
+				[Settings shared].hideNewRepositories = ![Settings shared].hideNewRepositories;
 				break;
-            }
+			}
 		}
 		[settingsChangedTimer push];
 	}
@@ -465,7 +469,7 @@ NSString *B(NSString *input)
     switch (section) {
 		case REFRESH_SECTION_INDEX: return 3;
 		case DISPLAY_SECTION_INDEX: return 5;
-		case COMMENTS_SECTION_INDEX: return 3;
+		case COMMENTS_SECTION_INDEX: return 4;
 		case REPOS_SECTION_INDEX: return 3;
 		case HISTORY_SECTION_INDEX: return 3;
 		case CONFIRM_SECTION_INDEX: return 2;
@@ -515,7 +519,7 @@ NSString *B(NSString *input)
 	{
 		if(selectedIndexPath.row==0)
 		{
-			[Settings shared].refreshPeriod = indexPath.row*10+30;
+			[Settings shared].refreshPeriod = indexPath.row*10+60;
 		}
 		else if(selectedIndexPath.row==1)
 		{
@@ -531,10 +535,6 @@ NSString *B(NSString *input)
 		[Settings shared].sortMethod = indexPath.row;
 		[settingsChangedTimer push];
 	}
-    else if(selectedIndexPath.section==REPOS_SECTION_INDEX)
-    {
-        [Settings shared].repoSubscriptionPolicy = indexPath.row;
-    }
 	else if(selectedIndexPath.section==HISTORY_SECTION_INDEX)
 	{
 		if(selectedIndexPath.row==0)

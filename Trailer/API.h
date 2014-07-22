@@ -1,6 +1,6 @@
 
 #define TRAILER_GITHUB_REPO @"http://dev.housetrip.com/trailer/"
-#define LOW_API_WARNING 0.10
+#define LOW_API_WARNING 0.20
 
 typedef enum {
 	kNewComment = 0,
@@ -45,6 +45,7 @@ typedef enum {
 @property (nonatomic) NSString *resetDate;
 @property (nonatomic) float requestsLimit, requestsRemaining;
 @property (nonatomic) Reachability *reachability;
+@property (nonatomic) long successfulRefreshesSinceLastStatusCheck;
 
 - (void)updateLimitFromServer;
 
@@ -64,8 +65,7 @@ typedef enum {
 
 - (NSString *)lastUpdateDescription;
 
-- (BOOL)haveCachedImage:(NSString *)path
-                forSize:(CGSize)imageSize
-     tryLoadAndCallback:(void(^)(IMAGE_CLASS *image))callbackOrNil;
+- (BOOL)haveCachedAvatar:(NSString *)path
+	  tryLoadAndCallback:(void(^)(IMAGE_CLASS *image))callbackOrNil;
 
 @end

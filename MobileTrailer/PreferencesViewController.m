@@ -69,7 +69,7 @@ NSFetchedResultsControllerDelegate, UIActionSheetDelegate>
 	self.instructionLabel.hidden = !instructionMode;
 	self.createTokenButton.hidden = !instructionMode;
 	self.viewTokensButton.hidden = !instructionMode;
-	self.selectionButton.enabled = (self.fetchedResultsController.fetchedObjects.count>0);
+	self.watchListButton.enabled = (self.fetchedResultsController.fetchedObjects.count>0);
 }
 
 - (void)dealloc
@@ -136,8 +136,6 @@ NSFetchedResultsControllerDelegate, UIActionSheetDelegate>
 		[self commitToken];
 	}
 
-	BOOL refreshStartedWithEmpty = ([Repo countItemsOfType:@"Repo" inMoc:[AppDelegate shared].dataManager.managedObjectContext]==0);
-
 	NSString *originalName = self.refreshRepoList.title;
 	self.refreshRepoList.title = @"Loading...";
 	[self instructionMode:NO];
@@ -146,10 +144,6 @@ NSFetchedResultsControllerDelegate, UIActionSheetDelegate>
 	self.githubApiToken.hidden = YES;
 
 	[[AppDelegate shared].api fetchRepositoriesAndCallback:^(BOOL success) {
-
-		if(refreshStartedWithEmpty)
-			for(Repo *r in self.fetchedResultsController.fetchedObjects)
-				r.active = @YES;
 
 		self.refreshRepoList.title = originalName;
 		self.refreshRepoList.enabled = YES;
@@ -194,7 +188,9 @@ NSFetchedResultsControllerDelegate, UIActionSheetDelegate>
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
 	Repo *repo = [self.fetchedResultsController objectAtIndexPath:indexPath];
-	repo.active = @(!repo.active.boolValue);
+	BOOL hideNow = !repo.hidden.boolValue;
+	repo.hidden = @(hideNow);
+	repo.dirty = @(!hideNow);
 	[[AppDelegate shared].dataManager saveDB];
 	[tableView deselectRowAtIndexPath:indexPath animated:NO];
 	[AppDelegate shared].preferencesDirty = YES;
@@ -328,50 +324,25 @@ NSFetchedResultsControllerDelegate, UIActionSheetDelegate>
 {
     Repo *repo = [self.fetchedResultsController objectAtIndexPath:indexPath];
     cell.textLabel.text = repo.fullName;
-	if(repo.active.boolValue)
-		cell.accessoryType = UITableViewCellAccessoryCheckmark;
-	else
-		cell.accessoryType = UITableViewCellAccessoryNone;
-}
-
-- (IBAction)iphoneSelection:(UIBarButtonItem *)sender {
-	[self showSelectionOptions:sender];
-}
-- (IBAction)ipadSelection:(UIBarButtonItem *)sender {
-	[self showSelectionOptions:sender];
-}
-- (void)showSelectionOptions:(UIBarButtonItem *)sender
-{
-	UIActionSheet *selectionSheet = [[UIActionSheet alloc] initWithTitle:self.title
-																delegate:self
-													   cancelButtonTitle:@"Cancel"
-												  destructiveButtonTitle:nil
-													   otherButtonTitles:@"Select All", @"Select All Parents", @"Unselect All", nil];
-	[selectionSheet showFromBarButtonItem:sender animated:YES];
-}
-
-- (void)actionSheet:(UIActionSheet *)actionSheet willDismissWithButtonIndex:(NSInteger)buttonIndex
-{
-	if(buttonIndex==3) return;
-	NSArray *allRepos = self.fetchedResultsController.fetchedObjects;
-	switch (buttonIndex) {
-		case 0:
-		{
-			for(Repo *r in allRepos) r.active = @YES;
-			break;
-		}
-		case 1:
-		{
-			for(Repo *r in allRepos) if(!r.fork.boolValue) r.active = @YES;
-			break;
-		}
-		case 2:
-		{
-			for(Repo *r in allRepos) r.active = @NO;
-			break;
-		}
+	if(repo.hidden.boolValue)
+	{
+		cell.accessoryView = [self makeX];
+		cell.textLabel.textColor = [UIColor lightGrayColor];
 	}
-	[AppDelegate shared].preferencesDirty = YES;
+	else
+	{
+		cell.accessoryView = nil;
+		cell.textLabel.textColor = [UIColor darkTextColor];
+	}
+}
+
+- (UIView *)makeX
+{
+	UILabel *x = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 16, 16)];
+	x.textColor = [UIColor redColor];
+	x.font = [UIFont systemFontOfSize:14.0];
+	x.text = @"X";
+	return x;
 }
 
 - (IBAction)iphoneCreateToken:(UIButton *)sender {
@@ -385,6 +356,50 @@ NSFetchedResultsControllerDelegate, UIActionSheetDelegate>
 }
 - (IBAction)ipadViewTokens:(UIButton *)sender {
 	[self viewTokens];
+}
+- (IBAction)ipadWatchlistSelected:(UIBarButtonItem *)sender {
+	[self watchListSelected];
+}
+- (IBAction)iphoneWatchlistSelected:(id)sender {
+	[self watchListSelected];
+}
+
+- (void)watchListSelected
+{
+	UIActionSheet *a = [[UIActionSheet alloc] initWithTitle:@"Watchlist"
+												   delegate:self
+										  cancelButtonTitle:@"Cancel"
+									 destructiveButtonTitle:@"Visit Watchlist"
+										  otherButtonTitles:@"Hide All",@"Show All",nil];
+	[a showFromBarButtonItem:self.watchListButton animated:YES];
+}
+
+- (void)actionSheet:(UIActionSheet *)actionSheet didDismissWithButtonIndex:(NSInteger)buttonIndex
+{
+	if(buttonIndex==3) return;
+
+	switch (buttonIndex) {
+		case 0:
+		{
+			targetUrl = [NSString stringWithFormat:@"https://%@/watching",[Settings shared].apiFrontEnd];
+			[self performSegueWithIdentifier:@"openGithub" sender:self];
+			break;
+		}
+		case 1:
+		{
+			NSArray *allRepos = self.fetchedResultsController.fetchedObjects;
+			for(Repo *r in allRepos) { r.hidden = @YES; r.dirty = @NO; }
+			break;
+		}
+		case 2:
+		{
+			NSArray *allRepos = self.fetchedResultsController.fetchedObjects;
+			for(Repo *r in allRepos) { r.hidden = @NO; r.dirty = @YES; }
+			break;
+		}
+	}
+
+	[AppDelegate shared].preferencesDirty = YES;
 }
 
 - (void)viewTokens
@@ -419,7 +434,7 @@ NSFetchedResultsControllerDelegate, UIActionSheetDelegate>
 	NSIndexSet *currentIndexes = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, _fetchedResultsController.sections.count)];
 
 	_fetchedResultsController = nil;
-	self.selectionButton.enabled = (self.fetchedResultsController.fetchedObjects.count>0);
+	self.watchListButton.enabled = (self.fetchedResultsController.fetchedObjects.count>0);
 
 	NSIndexSet *dataIndexes = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, _fetchedResultsController.sections.count)];
 

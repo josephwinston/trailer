@@ -56,7 +56,9 @@
 #ifdef __IPHONE_OS_VERSION_MIN_REQUIRED
 	[[UIApplication sharedApplication] setMinimumBackgroundFetchInterval:backgroundRefreshPeriod];
 #endif
-	[[NSUserDefaults standardUserDefaults] setFloat:backgroundRefreshPeriod forKey:IOS_BACKGROUND_REFRESH_PERIOD_KEY];
+	NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+	[d setFloat:backgroundRefreshPeriod forKey:IOS_BACKGROUND_REFRESH_PERIOD_KEY];
+	[d synchronize];
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -65,14 +67,19 @@
 - (float)refreshPeriod
 {
 	float period = [[NSUserDefaults standardUserDefaults] floatForKey:REFRESH_PERIOD_KEY];
-	if(period==0)
+	if(period<60.0)
 	{
-		period = 60.0;
+		period = 120.0;
 		self.refreshPeriod = period;
 	}
 	return period;
 }
-- (void)setRefreshPeriod:(float)refreshPeriod { [[NSUserDefaults standardUserDefaults] setFloat:refreshPeriod forKey:REFRESH_PERIOD_KEY]; }
+- (void)setRefreshPeriod:(float)refreshPeriod
+{
+	NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+	[d setFloat:refreshPeriod forKey:REFRESH_PERIOD_KEY];
+	[d synchronize];
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -87,7 +94,12 @@
 	}
 	return period;
 }
-- (void)setNewRepoCheckPeriod:(float)newRepoCheckPeriod { [[NSUserDefaults standardUserDefaults] setFloat:newRepoCheckPeriod forKey:NEW_REPO_CHECK_PERIOD]; }
+- (void)setNewRepoCheckPeriod:(float)newRepoCheckPeriod
+{
+	NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+	[d setFloat:newRepoCheckPeriod forKey:NEW_REPO_CHECK_PERIOD];
+	[d synchronize];
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -112,6 +124,18 @@
 #define HIDE_PRS_KEY @"HIDE_UNCOMMENTED_PRS_KEY"
 - (void)setShouldHideUncommentedRequests:(BOOL)shouldHideUncommentedRequests { [self storeDefaultValue:@(shouldHideUncommentedRequests) forKey:HIDE_PRS_KEY]; }
 - (BOOL)shouldHideUncommentedRequests { return [[[NSUserDefaults standardUserDefaults] stringForKey:HIDE_PRS_KEY] boolValue]; }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define OPEN_PR_AT_FIRST_UNREAD_COMMENT_KEY @"OPEN_PR_AT_FIRST_UNREAD_COMMENT_KEY"
+- (void)setOpenPrAtFirstUnreadComment:(BOOL)openPrAtFirstUnreadComment { [self storeDefaultValue:@(openPrAtFirstUnreadComment) forKey:OPEN_PR_AT_FIRST_UNREAD_COMMENT_KEY]; }
+- (BOOL)openPrAtFirstUnreadComment { return [[[NSUserDefaults standardUserDefaults] stringForKey:OPEN_PR_AT_FIRST_UNREAD_COMMENT_KEY] boolValue]; }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define HIDE_NEW_REPOS_KEY @"HIDE_NEW_REPOS_KEY"
+- (void)setHideNewRepositories:(BOOL)hideNewRepositories { [self storeDefaultValue:@(hideNewRepositories) forKey:HIDE_NEW_REPOS_KEY]; }
+- (BOOL)hideNewRepositories { return [[[NSUserDefaults standardUserDefaults] stringForKey:HIDE_NEW_REPOS_KEY] boolValue]; }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -141,6 +165,40 @@
 #define STATUS_FILTERING_METHOD_KEY @"STATUS_FILTERING_METHOD_KEY"
 - (NSInteger)statusFilteringMode { return [[[NSUserDefaults standardUserDefaults] objectForKey:STATUS_FILTERING_METHOD_KEY] integerValue]; }
 - (void)setStatusFilteringMode:(NSInteger)statusFilteringMode { [self storeDefaultValue:@(statusFilteringMode) forKey:STATUS_FILTERING_METHOD_KEY]; }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define UPDATE_CHECK_INTERVAL_KEY @"UPDATE_CHECK_INTERVAL_KEY"
+- (NSInteger)checkForUpdatesInterval
+{
+    id item = [[NSUserDefaults standardUserDefaults] objectForKey:UPDATE_CHECK_INTERVAL_KEY];
+    if(item)
+    {
+        return [item integerValue];
+    }
+    else
+    {
+        return 8;
+    }
+}
+- (void)setCheckForUpdatesInterval:(NSInteger)checkForUpdatesInterval { [self storeDefaultValue:@(checkForUpdatesInterval) forKey:UPDATE_CHECK_INTERVAL_KEY]; }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define UPDATE_CHECK_AUTO_KEY @"UPDATE_CHECK_AUTO_KEY"
+- (void)setCheckForUpdatesAutomatically:(BOOL)checkForUpdatesAutomatically { [self storeDefaultValue:@(checkForUpdatesAutomatically) forKey:UPDATE_CHECK_AUTO_KEY]; }
+- (BOOL)checkForUpdatesAutomatically
+{
+    id item = [[NSUserDefaults standardUserDefaults] stringForKey:UPDATE_CHECK_AUTO_KEY];
+    if(item)
+    {
+        return [item boolValue];
+    }
+    else
+    {
+        return YES;
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -251,9 +309,21 @@
 - (void)setMergeHandlingPolicy:(NSInteger)mergeHandlingPolicy { [self storeDefaultValue:@(mergeHandlingPolicy) forKey:MERGE_HANDLING_POLICY]; }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #define CLOSE_HANDLING_POLICY @"CLOSE_HANDLING_POLICY"
 - (NSInteger)closeHandlingPolicy { return [[[NSUserDefaults standardUserDefaults] stringForKey:CLOSE_HANDLING_POLICY] integerValue]; }
 - (void)setCloseHandlingPolicy:(NSInteger)closeHandlingPolicy { [self storeDefaultValue:@(closeHandlingPolicy) forKey:CLOSE_HANDLING_POLICY]; }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define STATUS_ITEM_REFRESH_COUNT @"STATUS_ITEM_REFRESH_COUNT"
+- (NSInteger)statusItemRefreshInterval
+{
+	NSInteger i = [[[NSUserDefaults standardUserDefaults] stringForKey:STATUS_ITEM_REFRESH_COUNT] integerValue];
+	if(i==0) i = 10;
+	return i;
+}
+- (void)setStatusItemRefreshInterval:(NSInteger)statusItemRefreshInterval { [self storeDefaultValue:@(statusItemRefreshInterval) forKey:STATUS_ITEM_REFRESH_COUNT]; }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -313,11 +383,46 @@
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+#define RECEIVED_EVENT_ETAG @"RECEIVED_EVENT_ETAG"
+- (NSString *)latestReceivedEventEtag { return [[NSUserDefaults standardUserDefaults] stringForKey:RECEIVED_EVENT_ETAG]; }
+- (void)setLatestReceivedEventEtag:(NSString *)latestReceivedEventEtag { [self storeDefaultValue:latestReceivedEventEtag forKey:RECEIVED_EVENT_ETAG]; }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define RECEIVED_LATEST_EVENT_DATE @"RECEIVED_LATEST_EVENT_DATE"
+- (NSDate *)latestReceivedEventDateProcessed
+{
+	NSDate *d = [[NSUserDefaults standardUserDefaults] objectForKey:RECEIVED_LATEST_EVENT_DATE];
+	if(!d) d = [NSDate distantPast];
+	return d;
+}
+- (void)setLatestReceivedEventDateProcessed:(NSString *)latestReceivedEventDateProcessed
+{ [self storeDefaultValue:latestReceivedEventDateProcessed forKey:RECEIVED_LATEST_EVENT_DATE]; }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define LATEST_USER_EVENT_ETAG @"LATEST_USER_EVENT_ETAG"
+- (NSString *)latestUserEventEtag { return [[NSUserDefaults standardUserDefaults] stringForKey:LATEST_USER_EVENT_ETAG]; }
+- (void)setLatestUserEventEtag:(NSString *)latestUserEventEtag { [self storeDefaultValue:latestUserEventEtag forKey:LATEST_USER_EVENT_ETAG]; }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define LATEST_USER_EVENT_DATE @"LATEST_USER_EVENT_DATE"
+- (NSDate *)latestUserEventDateProcessed
+{
+	NSDate *d = [[NSUserDefaults standardUserDefaults] objectForKey:LATEST_USER_EVENT_DATE];
+	if(!d) d = [NSDate distantPast];
+	return d;
+}
+- (void)setLatestUserEventDateProcessed:(NSString *)setLatestUserEventDateProcessed
+{ [self storeDefaultValue:setLatestUserEventDateProcessed forKey:LATEST_USER_EVENT_DATE]; }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #define API_FRONTEND_SERVER @"API_FRONTEND_SERVER"
 - (NSString *)apiFrontEnd
 {
 	NSString *value = [[NSUserDefaults standardUserDefaults] stringForKey:API_FRONTEND_SERVER];
-	value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 	if(value.length==0) value = @"github.com";
 	return value;
 }
@@ -329,7 +434,6 @@
 - (NSString *)apiBackEnd
 {
 	NSString *value = [[NSUserDefaults standardUserDefaults] stringForKey:API_BACKEND_SERVER];
-	value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 	if(value.length==0) value = @"api.github.com";
 	return value;
 }
@@ -337,7 +441,7 @@
 {
 	NSString *oldValue = self.apiBackEnd;
 	[self storeDefaultValue:apiBackEnd forKey:API_BACKEND_SERVER];
-	if(![oldValue isEqualToString:apiBackEnd])
+	if(!apiBackEnd || ![oldValue isEqualToString:apiBackEnd])
 	{
 		[[AppDelegate shared].api restartNotifier];
 	}
@@ -349,13 +453,9 @@
 - (NSString *)apiPath
 {
 	NSString *value = [[NSUserDefaults standardUserDefaults] stringForKey:API_SERVER_PATH];
-	value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-	if(value.length==0) value = @"";
+	if(value==nil) value = @"";
 	return value;
 }
-- (void)setApiPath:(NSString *)apiPath
-{
-	[self storeDefaultValue:apiPath forKey:API_SERVER_PATH];
-}
+- (void)setApiPath:(NSString *)apiPath { [self storeDefaultValue:apiPath forKey:API_SERVER_PATH]; }
 
 @end
